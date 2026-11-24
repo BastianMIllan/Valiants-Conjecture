@@ -1,0 +1,70 @@
+/* Internal dashboard: same system, denser. */
+.top .sync { margin-left: auto; color: var(--dim); font-size: 11px; text-transform: none; }
+.top .sync.bad { color: var(--acc); }
+.tb { background: var(--bg); border: 0; border-left: var(--hair); padding: 0 14px; cursor: pointer; font-weight: 700; font-size: 11px; letter-spacing: 0.05em; }
+.tb:hover { background: var(--fg); color: var(--bg); }
+
+.gate { min-height: calc(100svh - 44px); display: grid; place-items: center; padding: var(--pad); }
+.gate form { width: min(520px, 100%); padding: 28px; display: grid; gap: 12px; }
+.gate h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.03em; }
+.gate p { margin: 0; font-size: 12px; }
+.field { display: flex; }
+.field input { flex: 1; min-width: 0; }
+.err { color: var(--acc); min-height: 1.4em; }
+
+input, select {
+  background: var(--deep); color: var(--fg); border: var(--line); padding: 0 12px; min-height: 40px;
+  font: 500 13px var(--mono); border-radius: 0; outline: none;
+}
+input:focus, select:focus { border-color: var(--acc); }
+select { cursor: pointer; }
+
+.sec-h { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.sec-h .h { margin: 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.controls input { width: 240px; }
+
+.tbl .wal { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.tbl .wal button { background: none; border: 1px solid var(--faint); color: var(--dim); font-size: 10px; padding: 1px 5px; cursor: pointer; }
+.tbl .wal button:hover { color: var(--bg); background: var(--fg); }
+.tbl tr.banned td { opacity: 0.45; text-decoration: line-through; }
+.tbl tr.banned td:last-child { opacity: 1; text-decoration: none; }
+.tbl .unpaid { color: var(--acc); font-weight: 800; font-size: 15px; }
+.act { display: flex; gap: 6px; }
+.act button { background: var(--bg); border: 1px solid var(--faint); color: var(--fg); padding: 3px 8px; font-size: 11px; cursor: pointer; font-weight: 700; }
+.act button:hover { background: var(--fg); color: var(--bg); }
+.act button.danger:hover { background: var(--acc); color: var(--acc-ink); border-color: var(--acc); }
+
+.eform { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 10px; align-items: end; border: var(--line); padding: 16px; }
+.eform label { display: grid; gap: 6px; font-size: 11px; color: var(--dim); letter-spacing: 0.05em; }
+.eform input { width: 100%; }
+@media (max-width: 900px) { .eform { grid-template-columns: 1fr 1fr; } .eform .btn { grid-column: 1 / -1; } }
+#preview { margin-top: 18px; }
+.pv-sum { display: flex; flex-wrap: wrap; border: var(--line); border-bottom: 0; }
+.pv-sum > span { padding: 10px 14px; border-right: var(--hair); font-size: 12px; }
+.pv-sum b { font-size: 16px; }
+.pv-act { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
+
+.h3 { margin: 28px 0 10px; font-size: 13px; letter-spacing: 0.06em; font-weight: 800; }
+.banner { border: 2px solid var(--acc); color: var(--fg); padding: 12px 14px; margin-bottom: 14px; font-size: 13px; }
+.banner b { color: var(--acc); }
+.pill { font-size: 10px; font-weight: 800; padding: 2px 6px; letter-spacing: 0.04em; }
+.pill.on { background: var(--acc); color: var(--acc-ink); }
+.pill.off { border: 1px solid var(--faint); color: var(--dim); }
+.pill.ok { background: var(--fg); color: var(--bg); }
+.attr { display: flex; gap: 6px; }
+.attr input { min-height: 30px; width: 280px; font-size: 11px; }
+.rules-pre { margin: 0; border: var(--line); background: var(--deep); padding: 18px; overflow-x: auto; font-size: 13px; line-height: 1.7; }
+
+.drawer { background: var(--bg); color: var(--fg); border: var(--line); padding: 0; width: min(980px, calc(100vw - 32px)); max-height: calc(100svh - 48px); }
+.drawer::backdrop { background: rgba(0, 0, 0, 0.8); }
+.dr-h { display: flex; justify-content: space-between; align-items: center; border-bottom: var(--line); padding: 0 0 0 16px; position: sticky; top: 0; background: var(--bg); }
+.dr-h b { font-size: 18px; }
+.dr-h .btn.sm { min-height: 44px; border-width: 0 0 0 2px; border-color: var(--fg); }
+.dr-b { padding: 16px; display: grid; gap: 16px; }
+.kv { display: grid; grid-template-columns: 160px 1fr; border: var(--line); }
+.kv > * { padding: 8px 12px; border-bottom: var(--hair); font-size: 12px; overflow-wrap: anywhere; }
+.kv > :nth-child(odd) { color: var(--dim); border-right: var(--hair); }
+.kv > :nth-last-child(-n+2) { border-bottom: 0; }
+.note-row { display: flex; gap: 8px; }
+.note-row input { flex: 1; }

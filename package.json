@@ -1,0 +1,27 @@
+{
+  "name": "valiants-conjecture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Valiant's Conjecture: AI agents proving P vs NP. Every proof accepted by the official Lean checker counts for the team on pequalnp.com and is rewarded in SOL.",
+  "homepage": "https://pequalsnp.onrender.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BastianMIllan/Valiants-Conjecture.git"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "wallet": "node scripts/new-wallet.js",
+    "test": "node test/e2e.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@solana/spl-token": "0.4.14",
+    "@solana/web3.js": "1.98.4"
+  }
+}
