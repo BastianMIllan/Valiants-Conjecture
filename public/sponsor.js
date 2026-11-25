@@ -25,7 +25,7 @@ function renderFounder(S) {
   }
   if (Number.isFinite(f.steps)) {
     $('#r-merged').textContent = fmt(f.steps);
-    $('#sp-founder').innerHTML = `I'm one of the leading contributors to that effort: my agents have <b>${esc(fmt(f.steps))}</b> proofs merged on its <a href="https://pequalnp.com/contributors" target="_blank" rel="noopener noreferrer">public leaderboard</a>. I created <b>${esc(S.project?.ticker || '$PNP')}</b> to help this experiment grow. The token's creator fees go to pequalnp.com through its <a href="https://pequalnp.com/sponsors" target="_blank" rel="noopener noreferrer">official sponsor program</a>.`;
+    $('#sp-founder').innerHTML = `I'm one of the leading contributors to that effort: my agents have <b>${esc(fmt(f.steps))}</b> proofs merged on its <a href="https://pequalnp.com/contributors" target="_blank" rel="noopener noreferrer">public leaderboard</a>. I created <b>${esc(S.project?.ticker || '$PvsNP')}</b> to help this experiment grow. The token's creator fees go to pequalnp.com through its <a href="https://pequalnp.com/sponsors" target="_blank" rel="noopener noreferrer">official sponsor program</a>.`;
   }
   if (f.contributors) $('#r-people').textContent = fmt(f.contributors);
   if (HANDLE.test(f.handle || '')) $('#sp-profile').href = `https://pequalnp.com/a/${encodeURIComponent(f.handle)}`;
@@ -33,7 +33,7 @@ function renderFounder(S) {
 
 function renderBuy(S) {
   const url = S.project?.pumpUrl || '';
-  if (HTTPS.test(url)) { const a = $('#sp-buy'); a.href = url; a.textContent = `Buy ${S.project?.ticker || '$PNP'} ↗`; a.hidden = false; $('#sp-ca').hidden = true; }
+  if (HTTPS.test(url)) { const a = $('#sp-buy'); a.href = url; a.textContent = `Buy ${S.project?.ticker || '$PvsNP'} ↗`; a.hidden = false; $('#sp-ca').hidden = true; }
 }
 
 function renderFund(S) {
@@ -75,7 +75,7 @@ async function loadState() {
     const r = await fetch('/api/state', { cache: 'no-store' });
     if (!r.ok) return;
     const S = await r.json();
-    fillProject(S.project || { name: "Valiant's Conjecture", ticker: '$PNP' });
+    fillProject(S.project || { name: "Valiant's Conjecture", ticker: '$PvsNP' });
     renderFounder(S); renderBuy(S); renderFund(S); renderPrograms(S);
   } catch { /* keep the static text */ }
 }

@@ -162,7 +162,7 @@ All settings live in [config.js](../config.js) and can be set through environmen
 | `SOLANA_RPC`, `SOLANA_CLUSTER` | mainnet | RPC endpoint and cluster name for explorer links |
 | `PAYOUT_INTERVAL_MINUTES` | 10 | distribution interval |
 | `PAYOUT_RESERVE_SOL`, `MIN_DISTRIBUTION_SOL`, `MIN_PAYOUT_SOL` | 0.01 / 0.01 / 0.001 | thresholds |
-| `PROJECT_NAME`, `TICKER`, `PROJECT_SLUG` | `Valiant's Conjecture`, `$PNP`, `pnp` | branding |
+| `PROJECT_NAME`, `TICKER`, `PROJECT_SLUG` | `Valiant's Conjecture`, `$PvsNP`, `pnp` | branding |
 | `TOKEN_CA`, `PUMP_URL`, `X_URL`, `TG_URL` | empty | links shown on the site |
 | `SPLIT_CONTRIBUTORS`, `SPLIT_SPONSOR`, `SPLIT_OPS` | 70 / 20 / 10 | fee split shown on the site |
 | `TRUST_PROXY` | off | the number of reverse proxies in front of the server (`1` for one): the client address is read that many entries from the right of `X-Forwarded-For` |

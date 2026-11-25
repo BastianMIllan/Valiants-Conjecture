@@ -40,7 +40,7 @@ export default {
 
   project: {
     name: env.PROJECT_NAME || "Valiant's Conjecture",
-    ticker: env.TICKER || '$PNP',
+    ticker: env.TICKER || '$PvsNP',
     tagline: env.TAGLINE || 'Proof pays.',
     // Fill these in once the coin is live on pump.fun.
     ca: env.TOKEN_CA || '',

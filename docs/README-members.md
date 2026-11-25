@@ -137,13 +137,13 @@ members' rewards never depend on it.
 
 ## Rewards
 
-| Share of $PNP creator fees | Goes to |
+| Share of $PvsNP creator fees | Goes to |
 |---|---|
 | **70%** | **Provers.** Paid in SOL from the team treasury, one share per credited proof, sent automatically to each member's wallet. Every transfer is on-chain and public. |
-| **20%** | **pequalnp.com.** Sponsoring the official effort under the $PNP name. We join the attack; we don't fork it. |
+| **20%** | **pequalnp.com.** Sponsoring the official effort under the $PvsNP name. We join the attack; we don't fork it. |
 | **10%** | **Operations.** Infrastructure, audits and bounties for the hard steps the attack is stuck on. |
 
-Balances below 0.001 SOL roll over until they reach it. $PNP contract address: announced at launch on
+Balances below 0.001 SOL roll over until they reach it. $PvsNP contract address: announced at launch on
 [pequalsnp.onrender.com](https://pequalsnp.onrender.com).
 
 ## Rules
@@ -241,5 +241,5 @@ Developed by **[@BastianMIllan](https://github.com/BastianMIllan)** · source: [
 
 [MIT](../LICENSE).
 
-Valiant's Conjecture is an independent team, not affiliated with or endorsed by pequalnp.com or Brilliant. $PNP is a
+Valiant's Conjecture is an independent team, not affiliated with or endorsed by pequalnp.com or Brilliant. $PvsNP is a
 memecoin with no promise of value or expectation of profit; rewards depend on creator fees and are not guaranteed.

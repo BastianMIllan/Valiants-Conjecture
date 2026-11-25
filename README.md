@@ -1,8 +1,8 @@
 <p align="center">
-  <a href="https://pequalsnp.onrender.com"><img src=".github/assets/hero-sponsor.svg" alt="$PNP: a community token backing the open attack on P vs NP. Creator fees fund pequalnp.com through its official sponsor program." width="100%"></a>
+  <a href="https://pequalsnp.onrender.com"><img src=".github/assets/hero-sponsor.svg" alt="$PvsNP: a community token backing the open attack on P vs NP. Creator fees fund pequalnp.com through its official sponsor program." width="100%"></a>
 </p>
 
-<h1 align="center">$PNP · Valiant's Conjecture</h1>
+<h1 align="center">$PvsNP · Valiant's Conjecture</h1>
 
 <p align="center">
   <a href="https://pequalsnp.onrender.com"><img alt="lemmas proven" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpequalsnp.onrender.com%2Fapi%2Fbadge%2Fproven&style=flat-square"></a>
@@ -23,7 +23,7 @@
 
 ---
 
-**$PNP** is a community token by [@BastianMIllan](https://github.com/BastianMIllan), one of the leading contributors to the
+**$PvsNP** is a community token by [@BastianMIllan](https://github.com/BastianMIllan), one of the leading contributors to the
 open, machine-checked attack on P vs NP at [pequalnp.com](https://pequalnp.com). Its creator fees go to pequalnp.com
 through the [official sponsor program](https://pequalnp.com/sponsors).
 
@@ -42,11 +42,11 @@ the official record, and the run itself is mirrored in real time at
 
 ## Where the fees go
 
-- **The fund.** Creator fees from $PNP go into a public sponsorship fund. The website shows the current split; by default,
+- **The fund.** Creator fees from $PvsNP go into a public sponsorship fund. The website shows the current split; by default,
   all creator fees go to the fund.
 - **The recipient.** The fund is paid to pequalnp.com through its official sponsor program, like any other sponsor.
 - **First goal.** A place among the first names on the official sponsor wall.
-- **Next.** A logo sponsorship ($5,000), which puts the $PNP logo under the hero of pequalnp.com.
+- **Next.** A logo sponsorship ($5,000), which puts the $PvsNP logo under the hero of pequalnp.com.
 - **In public.** The fund is a Solana wallet anyone can watch, and every payment to pequalnp.com is listed on the
   website with its date and amount.
 
@@ -61,7 +61,7 @@ the official record, and the run itself is mirrored in real time at
 
 <details><summary><b>Is this pequalnp.com?</b></summary>
 
-No. $PNP is an independent community token by @BastianMIllan. It is not affiliated with or endorsed by pequalnp.com or
+No. $PvsNP is an independent community token by @BastianMIllan. It is not affiliated with or endorsed by pequalnp.com or
 Brilliant. We back the effort through its public sponsor program, like any other sponsor.
 </details>
 
@@ -77,7 +77,7 @@ Yes. Follow [pequalnp.com's official instructions](https://pequalnp.com/join.txt
 yours, under your own GitHub account, on the official board.
 </details>
 
-<details><summary><b>Is $PNP an investment?</b></summary>
+<details><summary><b>Is $PvsNP an investment?</b></summary>
 
 No. It is a memecoin with no promise of value and no expectation of profit. Sponsorship amounts depend on creator fees
 and are not guaranteed.
@@ -113,5 +113,5 @@ Developed by **[@BastianMIllan](https://github.com/BastianMIllan)** · source:
 
 [MIT](LICENSE).
 
-$PNP is an independent community token, not affiliated with or endorsed by pequalnp.com or Brilliant. It is a memecoin
+$PvsNP is an independent community token, not affiliated with or endorsed by pequalnp.com or Brilliant. It is a memecoin
 with no promise of value or expectation of profit; sponsorship depends on creator fees and is not guaranteed.
