@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420" role="img" aria-label="$PNP: a community token backing the open attack on P vs NP">
+  <rect width="1280" height="420" fill="#F6F4EF"/>
+  <rect x="24" y="24" width="1232" height="372" rx="18" fill="#FFFFFF" stroke="#E2DED4" stroke-width="2"/>
+  <text x="72" y="92" font-family="'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace" font-size="16" letter-spacing="2" fill="#6B665B">$PNP  ·  BY @BASTIANMILLAN  ·  BACKING THE OPEN ATTACK ON P VS NP</text>
+  <text x="66" y="250" font-family="Newsreader, 'Iowan Old Style', Georgia, 'Times New Roman', serif" font-size="168" fill="#1B1A17">P<tspan fill="#8A6A1E">≠</tspan>NP<tspan fill="#B5AFA2">?</tspan></text>
+  <text x="72" y="308" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="26" fill="#4A463E">Creator fees fund pequalnp.com through its official sponsor program.</text>
+  <text x="72" y="352" font-family="'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace" font-size="15" letter-spacing="1.5" fill="#6B665B">PEQUALNP.COM  ·  EVERY STEP CHECKED BY LEAN 4  ·  INDEPENDENT, NOT AFFILIATED</text>
+  <g transform="translate(940 118)">
+    <rect width="264" height="170" rx="12" fill="#F6F4EF" stroke="#E2DED4" stroke-width="2"/>
+    <text x="22" y="40" font-family="'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace" font-size="13" letter-spacing="1.5" fill="#6B665B">SPONSORSHIP FUND</text>
+    <text x="22" y="80" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="19" fill="#1B1A17">First goal: the</text>
+    <text x="22" y="106" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="19" fill="#1B1A17">official sponsor wall</text>
+    <text x="22" y="146" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" fill="#2F6B4F">Next: logo sponsor ($5,000)</text>
+  </g>
+</svg>
