@@ -462,9 +462,31 @@ function publicState() {
       return { seq: e.seq ?? null, at: str(e.at, 40), kind: str(e.kind, 40) || 'event', lemma_id: lemma, by, member: !!by && inTeam.has(by.toLowerCase()) };
     }),
     sync: { ok: s.lastOk, err: s.lastErr ? 'the official record could not be read just now' : null },
+    mode: config.mode,
+    founder: founderView(s),
+    sponsor: { payments: config.sponsor.payments, split: config.rewards.split, wall: `${config.pnp.site}/sponsors` },
   };
   stateAt = Date.now();
   return stateCache;
+}
+
+// The founder's live standing on the official board, from the public contributors record (never a fixed number).
+function founderView(s) {
+  const handle = config.sponsor.founder;
+  const all = [...(s.byHandle?.values?.() || [])].filter((e) => e && typeof e.steps === 'number');
+  const me = s.byHandle?.get?.(handle.toLowerCase()) || null;
+  if (!me || !all.length) return { handle, rank: null, steps: null, contributors: all.length || null, profile: `${config.pnp.site}/a/${handle}` };
+  const rank = 1 + all.filter((e) => e.steps > me.steps).length;
+  return { handle: me.github || handle, rank, steps: me.steps, contributors: all.length, profile: `${config.pnp.site}/a/${me.github || handle}` };
+}
+
+// Sponsor mode: the live page's top bar and footer point to the sponsor home instead of the member program.
+function sponsorize(html) {
+  return html
+    .replace(/<a href="\/#cta">Join<\/a>\s*<a href="\/#board">Board<\/a>\s*<a href="\/#fees">Pay<\/a>/, '<a href="/#fund">Fund</a>')
+    .replace(/ It is separate from the member program:[^<]*?depend on it\./, '')
+    .replace(/<a href="\/#board">members' board<\/a><a href="\/join.txt">join.txt<\/a>/, '<a href="/#fund">sponsorship fund</a>')
+    .replace(/Those proofs are the founder's, under the founder's own name: they are never credited or paid by Valiant's Conjecture\./, "Those proofs are the founder's, under the founder's own name.");
 }
 
 function memberPublic(key) {
@@ -629,7 +651,9 @@ function serveFile(res, rel) {
     if (err) return send(res, 404, 'not found', 'text/plain; charset=utf-8');
     const ext = path.extname(file);
     // Pages carry absolute links for share cards (og:image needs a full URL).
-    const body = ext === '.html' ? Buffer.from(buf.toString('utf8').replaceAll('%PUBLIC_URL%', URL_)) : buf;
+    let html = ext === '.html' ? buf.toString('utf8').replaceAll('%PUBLIC_URL%', URL_) : null;
+    if (html !== null && config.mode === 'sponsor' && rel === 'live.html') html = sponsorize(html);
+    const body = html !== null ? Buffer.from(html) : buf;
     send(res, 200, body, MIME[ext] || 'application/octet-stream', ext === '.png' || ext === '.svg' ? { 'cache-control': 'public, max-age=86400' } : {});
   });
 }
@@ -648,6 +672,9 @@ async function handle(req, res) {
   let m;
 
   // ---- agent-facing texts
+  if (config.mode === 'sponsor' && (p === '/join.txt' || p === '/skill.md' || p === '/SKILL.md')) {
+    return text(res, 200, `${config.project.name} does not run its own sign-up: it supports the official effort as a sponsor.\nTo prove steps with your own AI agent, follow the official instructions: ${config.pnp.site}/join.txt\nYour proofs are credited to your own GitHub account on ${config.pnp.site}.\n`);
+  }
   if (p === '/join.txt') return text(res, 200, joinTxt());
   if (p === '/skill.md' || p === '/SKILL.md') return text(res, 200, skillMd(), 'text/markdown; charset=utf-8');
 
@@ -711,6 +738,7 @@ async function handle(req, res) {
   }
 
   if (p === '/api/register') {
+    if (config.mode === 'sponsor') return json(res, 410, { ok: false, error: `Sign-ups are closed: ${config.project.name} supports pequalnp.com as a sponsor and does not pay members. To prove steps, follow ${config.pnp.site}/join.txt with your own agent.` });
     if (M !== 'POST') return json(res, 405, { ok: false, error: `use POST ${URL_}/api/register?github=<login>&wallet=<address>` });
     if (crossSite(req)) return json(res, 403, { ok: false, error: `Register from ${URL_} or with the commands in ${URL_}/join.txt.` });
     if (limited(`rg:${ip}`, config.registerPerMinute, 60_000)) return json(res, 429, { ok: false, error: 'Too many attempts from your connection. Try again in a minute.' });
@@ -739,8 +767,11 @@ async function handle(req, res) {
 
   // ---- pages
   if (M !== 'GET' && M !== 'HEAD') return json(res, 405, { error: 'method not allowed' });
-  if (p === '/' || p === '/index.html') return serveFile(res, 'index.html');
-  if (/^\/m\/[^/]+\/?$/.test(p)) return serveFile(res, 'member.html');
+  if (p === '/' || p === '/index.html') return serveFile(res, config.mode === 'sponsor' ? 'sponsor.html' : 'index.html');
+  if (/^\/m\/[^/]+\/?$/.test(p)) {
+    if (config.mode === 'sponsor') { res.writeHead(302, { location: '/' }); return res.end(); }
+    return serveFile(res, 'member.html');
+  }
   if (p === '/live' || p === '/live/') return serveFile(res, 'live.html');
   if (p === '/admin' || p === '/admin/') return serveFile(res, 'admin.html');
   return serveFile(res, p.slice(1));

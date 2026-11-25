@@ -9,7 +9,35 @@ const num = (v, d) => (v === undefined || v === '' || Number.isNaN(+v) ? d : +v)
 const yes = (v) => /^(1|true|yes|on)$/i.test(String(v || ''));
 const handles = (v) => String(v || '').split(',').map((h) => h.trim().replace(/^@/, '').toLowerCase()).filter(Boolean);
 
+// PROJECT_MODE: "members" (default: members prove with their own GitHub and are paid in SOL) or "sponsor"
+// (creator fees fund pequalnp.com through its official sponsor program; no sign-ups, no payouts).
+const MODE = String(env.PROJECT_MODE || '').trim().toLowerCase() === 'sponsor' ? 'sponsor' : 'members';
+if (env.PROJECT_MODE && !['members', 'sponsor'].includes(String(env.PROJECT_MODE).trim().toLowerCase())) {
+  console.warn(`[config] PROJECT_MODE="${env.PROJECT_MODE}" is not "members" or "sponsor": running in members mode`);
+}
+// SPONSOR_PAYMENTS: optional JSON list of payments made to pequalnp.com, shown publicly in sponsor mode:
+// [{"date":"2026-11-30","usd":100,"note":"Sponsor wall","link":"https://..."}]
+function sponsorPayments(v) {
+  if (!v) return [];
+  try {
+    const list = JSON.parse(v);
+    if (!Array.isArray(list)) throw new Error('not a list');
+    return list.slice(0, 50).map((p) => ({
+      date: /^\d{4}-\d{2}-\d{2}$/.test(String(p?.date || '')) ? String(p.date) : null,
+      usd: Number.isFinite(+p?.usd) && +p.usd > 0 && +p.usd < 1e7 ? Math.round(+p.usd * 100) / 100 : null,
+      note: typeof p?.note === 'string' ? p.note.slice(0, 120) : '',
+      link: typeof p?.link === 'string' && /^https:\/\/[^\s"'<>]{1,300}$/.test(p.link) ? p.link : null,
+    })).filter((p) => p.date && p.usd);
+  } catch (e) {
+    console.warn(`[config] SPONSOR_PAYMENTS is not a valid JSON list (${e.message}): ignored`);
+    return [];
+  }
+}
+
 export default {
+  mode: MODE,
+  sponsor: { payments: sponsorPayments(env.SPONSOR_PAYMENTS), founder: (env.FOUNDER_HANDLE || env.PNP_HANDLE || 'BastianMIllan').trim().replace(/^@/, '') },
+
   project: {
     name: env.PROJECT_NAME || "Valiant's Conjecture",
     ticker: env.TICKER || '$PNP',
@@ -77,11 +105,14 @@ export default {
 
   rewards: {
     // How creator fees are split (percent). Shown publicly on the site.
-    split: {
-      contributors: num(env.SPLIT_CONTRIBUTORS, 70),
-      sponsor: num(env.SPLIT_SPONSOR, 20), // back pequalnp.com's sponsor wall under the project's name
-      ops: num(env.SPLIT_OPS, 10),
-    },
+    // In sponsor mode the default is everything to the sponsorship fund (no provers' share).
+    split: MODE === 'sponsor'
+      ? { contributors: 0, sponsor: num(env.SPLIT_SPONSOR, 100), ops: num(env.SPLIT_OPS, 0) }
+      : {
+          contributors: num(env.SPLIT_CONTRIBUTORS, 70),
+          sponsor: num(env.SPLIT_SPONSOR, 20), // back pequalnp.com's sponsor wall under the project's name
+          ops: num(env.SPLIT_OPS, 10),
+        },
     // Weight of one credited proof, by the lemma's kind in the official record.
     // Unknown kinds use `default`. Edit freely: e.g. { default: 1, target: 5 }.
     weights: { default: 1 },
@@ -94,7 +125,8 @@ export default {
     rpc: env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com',
     cluster: env.SOLANA_CLUSTER || 'mainnet-beta', // for explorer links
     secretKey: env.PAYOUT_SECRET_KEY || '', // else data/payout-key.json (npm run wallet)
-    enabled: yes(env.PAYOUTS_ENABLED), // master switch: nothing is ever sent while this is off
+    // master switch: nothing is ever sent while this is off. Sponsor mode has no member payouts, so it is always off there.
+    enabled: yes(env.PAYOUTS_ENABLED) && MODE !== 'sponsor',
     intervalMinutes: Math.max(1, num(env.PAYOUT_INTERVAL_MINUTES, 10)),
     reserve: env.PAYOUT_RESERVE_SOL || '0.01', // never distributed: pays transaction fees
     minDistribution: env.MIN_DISTRIBUTION_SOL || '0.01', // new funds below this wait for more

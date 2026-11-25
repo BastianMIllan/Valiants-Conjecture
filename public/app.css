@@ -617,3 +617,25 @@ a.lb-who:hover span { text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* ---- sponsor mode (PROJECT_MODE=sponsor): the home page that backs pequalnp.com through its sponsor program ---- */
+.sp-founder { margin: 0; max-width: 620px; font-size: 16px; line-height: 1.65; color: var(--ink-2); }
+.sp-founder a, .sp-wallet a { color: var(--work); }
+.sp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.btn.big.ghost { background: transparent; border-color: var(--ink); color: var(--ink); }
+.btn.big.ghost:hover { background: var(--ink); color: var(--paper); }
+.pill { display: inline-flex; align-items: center; min-height: 34px; padding: 0 14px; border: 1px solid var(--rule); border-radius: 999px; background: var(--card); font: 500 11px/1 var(--mono); letter-spacing: 0.08em; color: var(--muted); }
+.sp-attack { align-self: start; }
+.sp-programs { margin: 0; padding: 6px 18px 4px; list-style: none; display: grid; gap: 14px; }
+.sp-prog-h { display: flex; justify-content: space-between; gap: 12px; font: 600 11px/1.3 var(--sans); letter-spacing: 0.1em; color: var(--ink); }
+.sp-prog-h .mono { font: 400 11px/1.3 var(--mono); letter-spacing: 0; color: var(--muted); white-space: nowrap; }
+.sp-bar { margin-top: 7px; height: 8px; border-radius: 999px; background: var(--rule); overflow: hidden; }
+.sp-bar i { display: block; height: 100%; border-radius: 999px; background: var(--ok); }
+.sp-nums { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 860px) { .sp-nums { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.sp-lead { margin: 0 0 4px; font: 400 22px/1.35 var(--serif); color: var(--ink); }
+.sp-ledger { margin-top: 16px; }
+.sp-wallet { margin: 0; padding: 14px 18px; font-size: 14px; color: var(--ink-2); overflow-wrap: anywhere; }
+.sp-ledger .lrows { padding: 0 18px 18px; }
+.sp-ledger .lrow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: baseline; }
+.mono { font-family: var(--mono); }
