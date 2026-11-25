@@ -5,12 +5,18 @@
 // interrupted transfers, and a member moving to a new wallet.
 // Run: npm test
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { Keypair } from '@solana/web3.js';
 import { createWorld } from './mock-world.mjs';
+import { createLive } from '../lib/live.js';
+import { buildSnapshot } from '../lib/live-snapshot.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -36,7 +42,10 @@ const port = 3900 + Math.floor(Math.random() * 80);
 const base = `http://127.0.0.1:${port}`;
 
 // Nothing from the developer's own environment may reach the server under test.
-const APP_VARS = ['PROJECT_NAME', 'TICKER', 'TAGLINE', 'TOKEN_CA', 'PUMP_URL', 'X_URL', 'TG_URL', 'PROJECT_SLUG', 'PUBLIC_URL', 'RENDER_EXTERNAL_URL', 'PORT', 'DATA_DIR', 'ADMIN_TOKEN', 'REGISTER_PER_MINUTE', 'PNP_SITE', 'PNP_DATA', 'PNP_REPO', 'SYNC_SECONDS', 'CONTRIBUTORS_REFRESH_SECONDS', 'GITHUB_API', 'GIST_RAW_BASE', 'GITHUB_TOKEN', 'GIST_TAG', 'PNP_HANDLE', 'PNP_FORMER_HANDLES', 'SPLIT_CONTRIBUTORS', 'SPLIT_SPONSOR', 'SPLIT_OPS', 'SOLANA_RPC', 'SOLANA_CLUSTER', 'PAYOUT_SECRET_KEY', 'PAYOUTS_ENABLED', 'PAYOUT_INTERVAL_MINUTES', 'PAYOUT_RESERVE_SOL', 'MIN_DISTRIBUTION_SOL', 'MIN_PAYOUT_SOL', 'PRIORITY_MICROLAMPORTS', 'PAYOUT_CONFIRM_TIMEOUT_SEC', 'PAYOUT_POLL_MS', 'PAYOUT_BATCH_SIZE', 'TRUST_PROXY'];
+const APP_VARS = ['PROJECT_NAME', 'TICKER', 'TAGLINE', 'TOKEN_CA', 'PUMP_URL', 'X_URL', 'TG_URL', 'PROJECT_SLUG', 'PUBLIC_URL', 'RENDER_EXTERNAL_URL', 'PORT', 'DATA_DIR', 'ADMIN_TOKEN', 'REGISTER_PER_MINUTE', 'PNP_SITE', 'PNP_DATA', 'PNP_REPO', 'SYNC_SECONDS', 'CONTRIBUTORS_REFRESH_SECONDS', 'GITHUB_API', 'GIST_RAW_BASE', 'GITHUB_TOKEN', 'GIST_TAG', 'PNP_HANDLE', 'PNP_FORMER_HANDLES', 'SPLIT_CONTRIBUTORS', 'SPLIT_SPONSOR', 'SPLIT_OPS', 'SOLANA_RPC', 'SOLANA_CLUSTER', 'PAYOUT_SECRET_KEY', 'PAYOUTS_ENABLED', 'PAYOUT_INTERVAL_MINUTES', 'PAYOUT_RESERVE_SOL', 'MIN_DISTRIBUTION_SOL', 'MIN_PAYOUT_SOL', 'PRIORITY_MICROLAMPORTS', 'PAYOUT_CONFIRM_TIMEOUT_SEC', 'PAYOUT_POLL_MS', 'PAYOUT_BATCH_SIZE', 'TRUST_PROXY', 'LIVE_PUBKEY', 'LIVE_POSTS_PER_MINUTE'];
+// The live mirror's signing key, made for this run only, and another key that must be refused.
+const liveKeys = crypto.generateKeyPairSync('ed25519');
+const otherKeys = crypto.generateKeyPairSync('ed25519');
 const env = { ...process.env };
 for (const k of APP_VARS) delete env[k];
 Object.assign(env, {
@@ -61,6 +70,8 @@ Object.assign(env, {
   SYNC_SECONDS: '600',
   CONTRIBUTORS_REFRESH_SECONDS: '600',
   TRUST_PROXY: '1',
+  LIVE_PUBKEY: liveKeys.publicKey.export({ type: 'spki', format: 'der' }).toString('base64'),
+  LIVE_POSTS_PER_MINUTE: '20',
 });
 
 let child = null;
@@ -103,6 +114,119 @@ const wal = () => Keypair.generate().publicKey.toBase58();
 const W = Object.fromEntries(['alice', 'alice2', 'bob', 'bob2', 'carol', 'dave', 'erin', 'erin2', 'frank', 'grace', 'henry', 'ctor', 'mallory', 'trent', 'sybil'].map((k) => [k, wal()]));
 const line = (w) => `valiant-conjecture wallet: ${w}`;
 
+// ---------------------------------------------------------------- live mirror helpers
+const pr = (n) => `https://github.com/open-goat/pequalnp-proofs/pull/${n}`;
+const ago = (ms) => new Date(Date.now() - ms).toISOString();
+const LIVE_KEYS = ['account', 'start', 'end', 'counts', 'rank', 'board', 'accepted', 'waiting', 'ready', 'engine', 'activity'];
+// 64 bytes in base64: shaped like a signature, signed by nobody.
+const FAKE_SIG = Buffer.alloc(64, 7).toString('base64');
+let liveAt = 0;
+const nextAt = () => new Date((liveAt = Math.max(Date.now(), liveAt + 1))); // strictly newer every time
+const liveBody = (snapshot, at = nextAt()) => JSON.stringify({ v: 1, at: at.toISOString(), snapshot });
+const signLive = (body, key = liveKeys.privateKey) => crypto.sign(null, Buffer.from(body), key).toString('base64');
+async function postLive(body, { sig = signLive(body), from = '198.51.100.7' } = {}) {
+  const headers = { 'content-type': 'application/json', 'x-forwarded-for': from };
+  if (sig) headers['x-live-signature'] = sig;
+  const r = await fetch(`${base}/api/live`, { method: 'POST', headers, body });
+  const t = await r.text();
+  let j = null;
+  try { j = JSON.parse(t); } catch {}
+  return { status: r.status, json: j };
+}
+async function getLive() {
+  const r = await fetch(`${base}/api/live`);
+  return { status: r.status, cache: r.headers.get('cache-control'), age: r.headers.get('x-live-age'), json: await r.json() };
+}
+// GET /api/live with exactly these headers (no automatic Accept-Encoding), body as received.
+function rawGet(headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`${base}/api/live`, { headers, agent: false }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+  });
+}
+// A snapshot upload on its own connection, sending only `body` of the `length` it announces: what
+// comes back, and how long until the server closes the connection.
+function rawUpload({ from, sig, length, body = '' }) {
+  const sock = net.connect(port, '127.0.0.1');
+  const opened = Date.now();
+  let data = '';
+  sock.on('data', (d) => { data += d; });
+  sock.on('error', () => {});
+  const closed = new Promise((resolve) => sock.on('close', () => resolve({ ms: Date.now() - opened, data })));
+  const head = ['POST /api/live HTTP/1.1', `Host: 127.0.0.1:${port}`, 'Content-Type: application/json', `Content-Length: ${length}`, `X-Forwarded-For: ${from}`];
+  if (sig) head.push(`X-Live-Signature: ${sig}`);
+  sock.write(`${head.join('\r\n')}\r\n\r\n${body}`);
+  return { sock, closed, within: (ms) => Promise.race([closed, sleep(ms).then(() => null)]) };
+}
+
+// Shaped like the operator dashboard's /api/status, including everything that must stay private.
+function dashboardStatus() {
+  const t = (ms) => new Date(Date.now() - ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const top = Array.from({ length: 80 }, (_, i) => ({ github: i === 6 ? 'BastianMIllan' : `prover-${i + 1}`, all: 200 - i * 2, hour: i % 5 }));
+  return {
+    paused: null,
+    account: 'BastianMIllan',
+    accepted: [
+      { id: 'L-meta-5768', title: 'A step toward: four-cycle-free bipartite incidence (step 1 of 2)', n: 11455, url: pr(11455), merged: false, acceptedAt: t(60e3), mergedAt: null, sentAt: t(4000e3) },
+      { id: 'L-meta-5633', title: `Table 1a: ${'x'.repeat(300)}`, n: 11451, url: pr(11451), merged: true, acceptedAt: t(120e3), mergedAt: t(90e3), sentAt: t(4100e3) },
+      { id: 'L-meta-5634', title: 'merged elsewhere', n: 1, url: 'https://github.com/elsewhere/repo/pull/1', merged: true, acceptedAt: t(130e3), mergedAt: t(100e3), sentAt: t(4200e3) },
+    ],
+    waiting: [
+      { id: 'L-meta-6524', title: '', n: 12042, url: pr(12042), sentAt: t(30e3), fault: false },
+      { id: 'L-meta-7406', title: 'just posted', n: '12058', url: pr(12058), sentAt: null, fault: false },
+      { id: 'L-meta-6183', title: 'checker fault', n: 11664, url: pr(11664), sentAt: t(3000e3), fault: true },
+    ],
+    ready: 80,
+    now: new Date().toISOString(),
+    start: Date.now() - 20 * 3600e3,
+    end: Date.now() + 10 * 3600e3,
+    setup: { toolchain: true, deps: true, mathlib: 1, mathlibText: 'ready', defs: true },
+    engine: {
+      policy: 'third-in-line: hold a proof while two other pull requests are in the queue',
+      limits: { per10: 20, perHour: 90, perDay: 900, inFlight: 120 },
+      pace: { last10: 19, lastHour: 83, last24: 254, inflight: 108 },
+      sender: { aliveS: 30, sentHour: 75 },
+      robot: { aliveS: 1, triedHour: 2, passedHour: 3, passedAll: 4, last: 'D:/pnp/work/L-meta-7527/Proof.lean passed' },
+      family: { aliveS: 3, okHour: 1, triedHour: 2 },
+      provers: { stepsTouched15: 83 },
+      uploads: { last10: 1, lastHour: 2, last24: 3, per10: 4, perHour: 5, perDay: 6, prestageCap: 7 },
+      health: { ok: false, n: 3, ageS: 10, failing: ['C:/Users/someone/.valiant/token ghp_0123456789abcdefghijklmnopqrstuvwxyz'] },
+      resends: { sent: 1, tried: 2 },
+      blocked: 3,
+    },
+    poller: { alive: true, last_line_age_s: 3 },
+    counts: { accepted: 53, merging: 14, prs: 253, held: 15, seen: 1699 },
+    rank: { hour: 2, all: 7, ahead: 5, tied: 2, steps_all: 53, steps_hour: 15 },
+    board: {
+      at: new Date().toISOString(),
+      agents: 290,
+      outside: { count: 510, steps: 1906, newest: { github: 'someone', lemma_id: 'L-meta-5050', ref: 'ee3905db1c34', at: t(1e3) }, faces: [{ github: 'someone' }] },
+      hour: top.slice(0, 10).map((r) => ({ ...r, last: t(5e3) })),
+      top,
+      total: 510,
+      leaderHour: { github: 'prover-1', all: 200, hour: 17, last: t(5e3) },
+    },
+    steps: [
+      { id: 'L-meta-7527', title: 'in work', status: 'released', posted: false, statement: 'theorem in_work_statement : True', taken_at: t(10e3) },
+      { id: 'L-meta-7457', title: 'held proof', status: 'held', posted: false, statement: 'theorem held_statement : True', ready_at: t(5e3) },
+    ],
+    prs: [{ id: 'L-meta-1708', url: pr(3868), title: 'lost', n: 3868, verdict: 'LOST', merged: false, state: 'closed', final: true, sentAt: t(9000e3) }],
+    activity: [
+      { at: t(5e3), text: 'Working on L-meta-7527: A step toward: in work', src: 'me' },
+      { at: t(6e3), text: `Pull request sent as BastianMIllan for L-meta-7406 (posted step): ${pr(12058)}`, src: 'me' },
+      { at: t(6e3), text: 'L-meta-7406 was posted by the desk: its pull request was opened from the held proof', src: 'me' },
+      { at: t(7e3), text: "Proof of L-meta-7457 is ready and staged; held because 2 other pull request(s) are already in the checker's queue (we would be third or later)", src: 'me' },
+      { at: t(8e3), text: 'Pull request sent as BastianMIllan for L-meta-7000 (posted step): https://evil.example/open-goat/pequalnp-proofs/pull/1', src: 'me' },
+      { at: t(9e3), text: 'Permission denied writing D:/pnp/state.json', src: 'me' },
+      { at: t(10e3), text: `Pull request sent as BastianMIllan for L-meta-6524 (posted step): ${pr(12042)}`, src: 'me' },
+    ],
+  };
+}
+
 try {
   await startServer();
 
@@ -122,6 +246,173 @@ try {
   ok((await call('GET', '/api/desk/next')).status === 410, 'the desk relay is gone (410, pointing to join.txt)');
   const sub = await call('POST', '/api/submit?assignment=x', { text: 'theorem x' });
   ok(sub.status === 410 && /join\.txt/.test(sub.json?.error), 'the submit endpoint is gone: the server never opens a pull request for a member');
+
+  section("Top bar and the live page");
+  const lp = await call('GET', '/live');
+  ok(lp.status === 200 && lp.text.includes('/live.js') && lp.text.includes("The founder's own agents, live:") && lp.text.includes('separate from the member program'), 'the live page answers at /live and says the account is the founder\'s own, separate from member payouts');
+  for (const [label, p] of [['home page', '/'], ['member page', '/m/alice'], ['live page', '/live']]) {
+    const html = (await call('GET', p)).text;
+    const nav = html.match(/<nav class="nav"[^>]*>([\s\S]*?)<\/nav>/)?.[1] || '';
+    const outside = [...nav.matchAll(/<a [^>]*target="_blank"[^>]*>/g)].map((x) => x[0]);
+    ok(nav.includes('href="/live"') && nav.includes('href="https://github.com/BastianMIllan/Valiants-Conjecture"') && nav.includes('href="https://x.com/Kvothe_Web3"') && outside.length === 2 && outside.every((a) => a.includes('rel="noopener noreferrer"')), `the ${label} has Live, GitHub and X in its top bar, the outside links in a new tab with no opener`);
+  }
+
+  section("Live mirror: signed snapshots only");
+  const g0 = await getLive();
+  ok(g0.status === 200 && g0.json?.at === null && g0.json.configured === true && g0.cache === 'no-store', 'before the first snapshot the mirror answers {"at":null,"configured":true}, never cached', g0);
+  ok((await call('PUT', '/api/live', { json: {} })).status === 405, 'methods other than GET, HEAD and POST are refused (405)');
+  const snap = {
+    account: 'BastianMIllan',
+    now: ago(5000),
+    start: ago(3600e3),
+    end: new Date(Date.now() + 3600e3).toISOString(),
+    counts: { accepted: 53, merging: 14, prs: 253, checking: 2, held_ids: ['L-meta-7457'] },
+    rank: { hour: 2, all: 7, ahead: 5, tied: 2, steps_all: 53, steps_hour: 15 },
+    board: { agents: 290, top: Array.from({ length: 20 }, (_, i) => ({ github: `prover-${i + 1}`, steps: 120 - i, hour: i % 4, email: `p${i}@example.com` })) },
+    accepted: [
+      { id: 'L-meta-5633', title: `${'A long statement '.repeat(30)}end`, url: pr(11451), at: ago(600e3), merged_at: ago(300e3), state: 'merged', statement: 'theorem hidden_statement : True' },
+      { id: 'L-meta-5768', title: 'accepted, being merged', url: pr(11455), at: ago(500e3), merged_at: null, state: 'accepted' },
+      { id: 'L-meta-5999', title: 'a pull request elsewhere', url: 'https://github.com/someone/else/pull/1', at: ago(400e3), state: 'merged' },
+      { id: '<img src=x onerror=alert(1)>', title: 'not a step id', url: pr(11460), at: ago(400e3), state: 'merged' },
+    ],
+    waiting: [
+      { id: 'L-meta-6524', title: '', url: pr(12042), at: ago(60e3) },
+      { id: 'L-meta-6525', title: 'script link', url: 'javascript:alert(1)', at: ago(60e3) },
+    ],
+    ready: 80,
+    held: 15,
+    engine: { stepsTouched15: 83, sentHour: 75, lastHour: 83, limits: { perHour: 90 }, policy: 'third-in-line', health: { failing: ['D:/pnp/x'] } },
+    activity: [
+      { at: ago(30e3), step: 'L-meta-7406', url: pr(12058), text: 'Working on L-meta-7527' },
+      { at: ago(40e3), step: 'L-meta-7000', url: 'https://evil.example/pull/1' },
+    ],
+    steps: [{ id: 'L-meta-7527', status: 'held', statement: 'theorem in_work_statement : True' }],
+    paused: { by: 'operator' },
+    setup: { mathlibText: 'ready' },
+  };
+  const lb1 = liveBody(snap);
+  ok((await postLive(lb1, { sig: '' })).status === 401, 'an unsigned snapshot is refused (401)');
+  ok((await postLive(lb1, { sig: signLive(lb1, otherKeys.privateKey) })).status === 401, 'a snapshot signed with another key is refused (401)');
+  ok((await postLive(lb1.replace('"ready":80', '"ready":81'), { sig: signLive(lb1) })).status === 401, 'a snapshot changed after it was signed is refused (401)');
+  ok((await postLive(lb1, { sig: 'not-a-signature' })).status === 401, 'a malformed signature is refused (401)');
+  ok((await postLive(liveBody(snap, new Date(Date.now() - 11 * 60e3)))).status === 400, 'a snapshot made more than 10 minutes ago is refused (400)');
+  ok((await postLive(liveBody(snap, new Date(Date.now() + 3 * 60e3)))).status === 400, 'a snapshot dated more than 2 minutes ahead is refused (400)');
+  ok((await postLive('{"v":1,"at":')).status === 400, 'a signed body that is not JSON is refused (400)');
+  const shapes = [{ v: 2, at: new Date().toISOString(), snapshot: snap }, { v: 1, at: new Date().toISOString(), snapshot: [1, 2] }, { v: 1, at: 'yesterday', snapshot: snap }];
+  const shaped = [];
+  for (const x of shapes) shaped.push((await postLive(JSON.stringify(x))).status);
+  ok(shaped.every((s) => s === 400), 'a signed body of the wrong shape (version, snapshot, time) is refused (400)', shaped);
+  ok((await postLive(liveBody({ ...snap, filler: 'x'.repeat(140 * 1024) }, new Date()))).status === 413, 'a snapshot over 128 KB is refused (413), even signed');
+
+  const v1 = await postLive(lb1);
+  ok(v1.status === 200 && v1.json?.ok && v1.json.at === JSON.parse(lb1).at, 'a snapshot signed with the key is accepted', v1);
+  const g1 = await getLive();
+  const s1 = g1.json?.snapshot || {};
+  ok(g1.json.at === JSON.parse(lb1).at && !('age_s' in g1.json) && Number(g1.age) >= 0 && Number(g1.age) < 30 && g1.cache === 'no-store', 'GET /api/live returns it, with its age in seconds in the x-live-age header, never cached', { at: g1.json.at, age: g1.age, cache: g1.cache });
+  ok(JSON.stringify(Object.keys(s1)) === JSON.stringify(LIVE_KEYS), 'only the whitelisted fields are kept: unknown fields such as steps, the pause state and the setup are dropped', Object.keys(s1));
+  ok(JSON.stringify(Object.keys(s1.engine || {})) === '["sentHour"]' && JSON.stringify(Object.keys(s1.counts || {})) === '["accepted","merging","prs","checking"]' && JSON.stringify(Object.keys(s1.rank || {})) === '["hour","all","ahead","steps_all","steps_hour"]', 'only figures the page shows are kept: one engine figure, no limits, policy, health, held count or ties; unknown counts are dropped', { engine: s1.engine, counts: s1.counts, rank: s1.rank });
+  ok(s1.board?.top?.length === 15 && s1.board.top.every((r) => JSON.stringify(Object.keys(r)) === '["github","steps","hour"]'), 'the board keeps its top 15 rows, each a handle and two figures', s1.board?.top?.length);
+  ok(s1.accepted?.length === 2 && s1.accepted[0].title.length <= 160 && s1.accepted[0].title.endsWith('…') && !('statement' in s1.accepted[0]) && s1.accepted[1].state === 'accepted', 'an over-long title is cut to 160 characters, and entries with a foreign pull request link or an invalid step id are dropped', s1.accepted);
+  ok(s1.waiting?.length === 1 && s1.waiting[0].id === 'L-meta-6524' && s1.activity?.length === 1 && JSON.stringify(Object.keys(s1.activity[0])) === '["at","step","url"]', 'only official pull request links survive, in the checking list and in the activity', { waiting: s1.waiting, activity: s1.activity });
+  ok(!/hidden_statement|in_work_statement|L-meta-7527|L-meta-7457|third-in-line|example\.com|evil\.example|javascript:|onerror|D:\/pnp|mathlib|operator/.test(JSON.stringify(g1.json)), 'nothing outside the whitelist reaches the public answer');
+  ok((await postLive(lb1)).status === 409, 'the same snapshot sent again is refused as a replay (409)');
+  ok((await postLive(liveBody(snap, new Date(Date.parse(JSON.parse(lb1).at) - 1000)))).status === 409, 'an older snapshot is refused too (409), even signed and recent');
+
+  section('Live mirror: what readers get');
+  const gz = await rawGet({ 'accept-encoding': 'gzip' });
+  let gzJson = null;
+  try { gzJson = JSON.parse(zlib.gunzipSync(gz.body).toString('utf8')); } catch {}
+  const plainGet = await rawGet();
+  ok(gz.status === 200 && gz.headers['content-encoding'] === 'gzip' && gzJson?.at === JSON.parse(lb1).at && plainGet.status === 200 && !plainGet.headers['content-encoding'] && plainGet.body.equals(zlib.gunzipSync(gz.body)) && gz.body.length < plainGet.body.length / 2 && /accept-encoding/.test(gz.headers.vary || ''), 'the snapshot is sent gzipped to clients that accept it, and as is to the others', { gzip: gz.body.length, plain: plainGet.body.length });
+  const tag = gz.headers.etag;
+  const nm = await rawGet({ 'if-none-match': tag });
+  ok(/^W\/"[A-Za-z0-9_-]{22}"$/.test(tag || '') && plainGet.headers.etag === tag && nm.status === 304 && nm.body.length === 0 && Number(nm.headers['x-live-age']) >= 0, 'it has an ETag, and a reader that already has it gets 304 with the age and no body', { tag, status: nm.status });
+  let readsSlowed = 0;
+  for (let i = 0; i < 61; i++) if ((await rawGet({ 'x-forwarded-for': '198.51.100.61', 'if-none-match': tag })).status === 429) readsSlowed++;
+  ok(readsSlowed === 1, 'more than 60 reads a minute from one connection are slowed down (429)', readsSlowed);
+
+  section('Live mirror: uploads that are refused, slow or abandoned');
+  const unsignedEnd = await rawUpload({ from: '203.0.113.50', length: 100000 }).within(3000);
+  ok(unsignedEnd !== null && /^HTTP\/1\.1 401 /.test(unsignedEnd.data) && /connection: close/i.test(unsignedEnd.data), 'a snapshot with no signature is refused (401) before its body is read, and the connection closed', unsignedEnd?.data.split('\r\n')[0]);
+  const held = [];
+  for (let i = 1; i <= 8; i++) held.push(rawUpload({ from: `203.0.113.${i}`, sig: FAKE_SIG, length: 20000, body: '{"v":1,' }));
+  await sleep(400);
+  const busy = await postLive(liveBody(snap), { sig: FAKE_SIG, from: '203.0.113.9' });
+  const twice = await postLive(liveBody(snap), { sig: FAKE_SIG, from: '203.0.113.1' });
+  ok(busy.status === 503 && twice.status === 429, 'while 8 uploads are being received, another one is refused (503), and one address sends one at a time (429)', { busy: busy.status, twice: twice.status });
+  const heldEnds = await Promise.all(held.map((u) => u.within(15000)));
+  ok(heldEnds.every((e) => e && e.ms >= 9000 && e.ms < 13000 && e.data === ''), 'an upload that has not arrived 10 seconds later is dropped', heldEnds.map((e) => e && { ms: e.ms, got: e.data.slice(0, 12) }));
+  const gone = rawUpload({ from: '203.0.113.20', sig: FAKE_SIG, length: 20000, body: '{"v":1,' });
+  await sleep(200);
+  gone.sock.destroy();
+  await gone.closed;
+  await sleep(200);
+  const lb3 = liveBody(snap);
+  const v3 = await postLive(lb3, { from: '203.0.113.9' });
+  const changed = await rawGet({ 'if-none-match': tag });
+  ok(v3.status === 200 && changed.status === 200 && changed.headers.etag !== tag && !/\[http\] POST \/api\/live/.test(logs), 'afterwards a signed snapshot is accepted again and gets a new ETag; an abandoned upload is not logged as a server error', { v3: v3.status, changed: changed.status });
+
+  section('Live mirror: no key, a wrong key, a new key');
+  const offDir = mkdir('valiant-live-');
+  for (const [label, key] of [['no LIVE_PUBKEY', ''], ['LIVE_PUBKEY=off', 'off'], ['a LIVE_PUBKEY that is not an Ed25519 key', 'not-a-key']]) {
+    const log = { n: 0, error() { this.n++; } };
+    const l = createLive({ dataDir: offDir, publicKey: key, log });
+    const v = JSON.parse(l.view().body);
+    const lbk = liveBody(snap);
+    ok(!l.configured && l.ingest(Buffer.from(lbk), signLive(lbk)).status === 503 && v.at === null && v.configured === false && log.n === (key === 'not-a-key' ? 1 : 0), `with ${label} the mirror is off: even a signed snapshot is refused (503), and the page is told it is not configured`, { v, errors: log.n });
+  }
+  const keyDir = mkdir('valiant-live-');
+  const spki = (kp) => kp.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const silent = { error() {} };
+  const lk = liveBody(snap);
+  const acceptedOnce = createLive({ dataDir: keyDir, publicKey: spki(liveKeys), log: silent }).ingest(Buffer.from(lk), signLive(lk)).status;
+  const sameKey = JSON.parse(createLive({ dataDir: keyDir, publicKey: spki(liveKeys), log: silent }).view().body);
+  const newKey = JSON.parse(createLive({ dataDir: keyDir, publicKey: spki(otherKeys), log: silent }).view().body);
+  ok(acceptedOnce === 200 && sameKey.at === JSON.parse(lk).at && newKey.at === null && newKey.configured === true, 'with the same key a restart shows the saved snapshot; after the key changes (a revoked key), what the old key signed is never shown again', { sameKey: sameKey.at, newKey: newKey.at });
+
+  section("Live mirror: the publisher's whitelist");
+  const status = dashboardStatus();
+  const built = buildSnapshot(status);
+  ok(JSON.stringify(Object.keys(built)) === JSON.stringify(LIVE_KEYS), 'a snapshot built from the dashboard status has only the whitelisted fields', Object.keys(built));
+  ok(!/in_work_statement|held_statement|L-meta-7527|L-meta-7457|statement|Working on|staged|held because|third|policy|limits|uploads|health|resends|blocked|paused|setup|mathlib|poller|robot|family|D:\/pnp|C:\/Users|ghp_|evil\.example|elsewhere|Permission|desk|L-meta-1708|someone/.test(JSON.stringify(built)), 'none of the private data is in it: steps in work or held, statements, engine limits, policy, uploads, health, the pause state, the setup, paths, tokens, other activity lines, foreign links');
+  ok(JSON.stringify(built.activity.map((a) => [a.step, a.url])) === JSON.stringify([['L-meta-7406', pr(12058)], ['L-meta-6524', pr(12042)]]) && built.activity.every((a) => JSON.stringify(Object.keys(a)) === '["at","step","url"]'), 'of the activity, only the "pull request sent" lines with an official link remain, as {at, step, url}', built.activity);
+  ok(built.accepted.length === 2 && built.accepted[0].id === 'L-meta-5768' && built.accepted[0].state === 'accepted' && built.accepted[1].state === 'merged' && !!built.accepted[1].merged_at && built.accepted[1].title.length <= 160, 'accepted proofs come newest first, merged or being merged, titles cut to 160 characters, foreign links dropped', built.accepted);
+  ok(JSON.stringify(built.waiting.map((w) => w.id)) === '["L-meta-7406","L-meta-6524","L-meta-6183"]' && built.waiting[0].at === null && built.counts.checking === 3, 'pull requests waiting for the checker come newest first by number, even one just opened with no time yet', built.waiting);
+  ok(JSON.stringify(built.engine) === '{"sentHour":75}' && built.ready === 80 && !('held' in built) && !('now' in built) && built.board.agents === 290, 'the engine gives one figure, ready proofs are a count, and the held count and the dashboard clock stay private', { engine: built.engine, ready: built.ready });
+  ok(built.board.top.length === 15 && built.board.top[6].github === 'BastianMIllan' && built.board.top[6].steps === 188 && JSON.stringify(built.rank) === '{"hour":2,"all":7,"ahead":5,"steps_all":53,"steps_hour":15}' && !!built.start && !!built.end, 'the board keeps its top 15 (handle, proofs, this hour), with the rank and the run window', built.board.top[6]);
+  const hostile = dashboardStatus();
+  const TOKEN = 'ghp_0123456789abcdefghijklmnopqrstuvwxyzAB';
+  hostile.accepted = [
+    { id: 'L-meta-9001', title: `C:\\Users\\PC\\.valiant\\live-ed25519-private.pem D:/pnp/state.json ${TOKEN}`, url: pr(13001), merged: true, acceptedAt: ago(3000), mergedAt: ago(2000) },
+    { id: TOKEN, title: 'a token as a step id', url: pr(13002), merged: true, acceptedAt: ago(4000), mergedAt: ago(3000) },
+    { id: 'L-meta-9003', title: 'A bound for f:\\{0,1\\}^n \\to \\{0,1\\}', url: pr(13003), merged: false, acceptedAt: ago(5000) },
+  ];
+  hostile.waiting = [{ id: 'L-meta-9004', title: '-----BEGIN PRIVATE KEY----- MC4CAQAwBQYDK2VwBCIEI', url: pr(13004), sentAt: ago(0) }, { id: 'L-meta_9005', title: 'not a step id', url: pr(13005), sentAt: ago(0) }];
+  hostile.activity = [{ at: ago(0), text: `Pull request sent as BastianMIllan for ${TOKEN} (posted step): ${pr(13002)}` }, { at: ago(0), text: `Pull request sent as BastianMIllan for L-meta.9006 (posted step): ${pr(13006)}` }];
+  const hs = buildSnapshot(hostile);
+  const hsText = JSON.stringify(hs);
+  ok(JSON.stringify(hs.accepted.map((a) => [a.id, a.title])) === JSON.stringify([['L-meta-9001', ''], ['L-meta-9003', 'A bound for f:\\{0,1\\}^n \\to \\{0,1\\}']]) && JSON.stringify(hs.waiting.map((w) => [w.id, w.title])) === '[["L-meta-9004",""]]' && hs.activity.length === 0 && ![TOKEN, '.valiant', 'D:/pnp', 'BEGIN', 'Users'].some((x) => hsText.includes(x)), 'a title holding a local path, a token or a key is published empty, and an id or activity line that is not a step id is dropped', { accepted: hs.accepted, waiting: hs.waiting, activity: hs.activity });
+  const huge = dashboardStatus();
+  huge.accepted = Array.from({ length: 600 }, (_, i) => ({ id: `L-meta-${i}`, title: 'y'.repeat(400), url: pr(20000 + i), merged: i % 2 === 0, acceptedAt: ago(i * 1000), mergedAt: ago(i * 500) }));
+  huge.waiting = Array.from({ length: 600 }, (_, i) => ({ id: `L-meta-${i}`, title: 'z'.repeat(400), url: pr(30000 + i), sentAt: ago(0) }));
+  huge.activity = Array.from({ length: 600 }, (_, i) => ({ at: ago(0), text: `Pull request sent as BastianMIllan for L-meta-${i} (posted step): ${pr(30000 + i)}` }));
+  const hb = buildSnapshot(huge);
+  const hbBytes = Buffer.byteLength(JSON.stringify({ v: 1, at: new Date().toISOString(), snapshot: hb }));
+  ok(hb.accepted.length === 100 && hb.waiting.length === 150 && hb.activity.length === 40 && hbBytes < 128 * 1024 && hb.waiting[0].url === pr(30599) && hb.accepted[0].id === 'L-meta-0', 'however long the dashboard lists grow, a snapshot keeps the newest 100 accepted, 150 checking and 40 events, under 128 KB', { bytes: hbBytes });
+  const lb2 = liveBody(built);
+  const v2 = await postLive(lb2);
+  const g2 = await getLive();
+  ok(v2.status === 200 && JSON.stringify(g2.json.snapshot) === JSON.stringify(built), "the server accepts the publisher's snapshot and serves it exactly as built", v2);
+
+  section('Live mirror: rate limit and restart');
+  let slowed = 0;
+  for (let i = 0; i < 21; i++) if ((await postLive('{}', { sig: '', from: '198.51.100.99' })).status === 429) slowed++;
+  ok(slowed === 1, 'more than 20 snapshots a minute from one connection are slowed down (429)', slowed);
+  await stopServer();
+  await startServer();
+  const g3 = await getLive();
+  ok(g3.json?.at === JSON.parse(lb2).at && JSON.stringify(g3.json.snapshot) === JSON.stringify(built) && fs.existsSync(path.join(dataDir, 'live.json')), 'the last snapshot survives a restart (DATA_DIR/live.json)', g3.json?.at);
+  ok((await postLive(lb2)).status === 409, 'and so does the replay check');
 
   section('Register: input checks');
   ok((await reg('alice', 'not-a-wallet')).status === 400, 'an invalid wallet is refused');

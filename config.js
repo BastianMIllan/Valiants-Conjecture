@@ -65,6 +65,16 @@ export default {
     formerHandles: handles(env.PNP_FORMER_HANDLES || 'PNPQED'),
   },
 
+  // The live mirror of the founder's operator dashboard (/live). The publisher on the founder's
+  // machine (npm run live) signs every snapshot with an Ed25519 key; the site only needs the public
+  // key, as base64 of its SPKI DER (printed by npm run live:keygen). There is no built-in key:
+  // empty or "off" switches the mirror off.
+  live: {
+    publicKey: String(env.LIVE_PUBKEY || '').trim(),
+    // Snapshots accepted per connection per minute (the publisher sends two).
+    postsPerMinute: Math.max(1, num(env.LIVE_POSTS_PER_MINUTE, 20)),
+  },
+
   rewards: {
     // How creator fees are split (percent). Shown publicly on the site.
     split: {

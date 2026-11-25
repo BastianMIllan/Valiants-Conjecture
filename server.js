@@ -18,6 +18,7 @@ import { createPayout } from './lib/payout.js';
 import { isSolana, isGithubLogin, normLogin, UserError } from './lib/verify.js';
 import { fmtUnits } from './lib/units.js';
 import { joinTxt, skillMd, gistLine, gistCommand, registerCommand } from './lib/texts.js';
+import { createLive, looksSigned, MAX_BYTES as LIVE_MAX_BYTES } from './lib/live.js';
 
 const store = openStore(config.dataDir);
 const db = store.db;
@@ -30,6 +31,16 @@ const pnp = createPnp({ config });
 const gh = createGithub({ config });
 const URL_ = config.publicUrl;
 const REPO = config.pnp.repo;
+// The founder's run, mirrored from the operator dashboard (/live). It never touches the ledger.
+const live = createLive({ dataDir: config.dataDir, publicKey: config.live.publicKey, repo: REPO });
+// Live snapshots being received right now, by address. The publisher sends one small snapshot
+// every 30 seconds, read in milliseconds: one at a time per address, a few in all, and a deadline
+// keep slow or abandoned uploads from holding the server's memory.
+const liveUploads = new Set();
+const LIVE_UPLOADS_MAX = 8;
+const LIVE_READ_MS = 10_000;
+// GET /api/live per address per minute: the page asks every 20 seconds.
+const LIVE_READS_PER_MINUTE = 60;
 const TEAM = new Set([config.github.handle, ...config.github.formerHandles].map((h) => String(h || '').toLowerCase()).filter(Boolean));
 const isTeam = (login) => TEAM.has(String(login || '').toLowerCase());
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -523,6 +534,49 @@ function readRaw(req, limit) {
     req.on('error', reject);
   });
 }
+// The body exactly as sent (bytes), or TOO_LARGE when it is larger than `limit`: such a body is
+// read to its end and thrown away, so the client gets its answer. null when nobody is left to
+// answer: the client hung up, took longer than `ms`, or sent more than `hardCap` (the connection is
+// dropped). It never rejects: a client hanging up is not a server error.
+const TOO_LARGE = Symbol('too large');
+function readCapped(req, limit, { hardCap = limit * 4, ms = 10_000 } = {}) {
+  return new Promise((resolve) => {
+    let timer = null;
+    const done = (v) => { clearTimeout(timer); resolve(v); };
+    timer = setTimeout(() => { done(null); req.destroy(); }, ms);
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > hardCap) return done(TOO_LARGE);
+    let size = 0;
+    let chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > hardCap) { done(null); req.destroy(); return; }
+      if (size > limit) chunks = null;
+      else chunks?.push(c);
+    });
+    req.on('end', () => done(chunks ? Buffer.concat(chunks) : TOO_LARGE));
+    req.on('close', () => done(null)); // after 'end' this changes nothing
+    req.on('error', () => done(null));
+  });
+}
+
+// GET /api/live: the same bytes until the next snapshot, gzipped once for clients that accept it,
+// and 304 for a client that already has them (If-None-Match). The age is in x-live-age (seconds).
+const acceptsGzip = (req) => String(req.headers['accept-encoding'] || '').split(',').some((t) => {
+  const [name, ...params] = t.split(';').map((s) => s.trim().toLowerCase());
+  return name === 'gzip' && !params.some((q) => /^q=0(?:\.0*)?$/.test(q));
+});
+function sendLive(req, res, v) {
+  const head = { 'cache-control': 'no-store', etag: v.etag, vary: 'accept-encoding' };
+  if (v.age !== null) head['x-live-age'] = String(v.age);
+  const weak = (t) => t.trim().replace(/^W\//, '');
+  if (String(req.headers['if-none-match'] || '').split(',').some((t) => weak(t) === weak(v.etag))) {
+    res.writeHead(304, head);
+    return res.end();
+  }
+  if (acceptsGzip(req)) return send(res, 200, v.gzip, 'application/json; charset=utf-8', { ...head, 'content-encoding': 'gzip' });
+  return send(res, 200, v.body, 'application/json; charset=utf-8', head);
+}
 async function readBody(req, limit = 16 * 1024) {
   const raw = await readRaw(req, limit);
   if (!raw) return {};
@@ -628,6 +682,34 @@ async function handle(req, res) {
     return json(res, 200, pub);
   }
 
+  // The founder's run, live (lib/live.js): anyone reads the latest snapshot; only the publisher on
+  // the founder's machine can post one, signed with its key.
+  if (p === '/api/live') {
+    if (M === 'GET' || M === 'HEAD') {
+      if (limited(`lg:${ip}`, LIVE_READS_PER_MINUTE, 60_000)) return json(res, 429, { ok: false, error: 'too many requests from your connection: the live page refreshes on its own every 20 seconds' });
+      return sendLive(req, res, live.view());
+    }
+    if (M !== 'POST') return json(res, 405, { ok: false, error: 'the live mirror is read with GET' });
+    if (limited(`lv:${ip}`, config.live.postsPerMinute, 60_000)) return json(res, 429, { ok: false, error: 'too many snapshots from your connection' });
+    // Refused before a byte of the body is read, and the connection closed.
+    const refuse = (status, error) => send(res, status, { ok: false, error }, 'application/json; charset=utf-8', { connection: 'close' });
+    if (!live.configured) return refuse(503, 'the live mirror is not configured on this server');
+    if (!looksSigned(req.headers['x-live-signature'])) return refuse(401, 'missing or invalid x-live-signature');
+    if (liveUploads.has(ip)) return refuse(429, 'a snapshot from your connection is still being received');
+    if (liveUploads.size >= LIVE_UPLOADS_MAX) return refuse(503, 'too many snapshots are being received: try again shortly');
+    liveUploads.add(ip);
+    let raw;
+    try {
+      raw = await readCapped(req, LIVE_MAX_BYTES, { ms: LIVE_READ_MS });
+    } finally {
+      liveUploads.delete(ip);
+    }
+    if (raw === null) return; // the client hung up or took too long: the connection is closed
+    if (raw === TOO_LARGE) return refuse(413, `a snapshot may be at most ${LIVE_MAX_BYTES / 1024} KB`);
+    const r = live.ingest(raw, req.headers['x-live-signature']);
+    return json(res, r.status, r.body);
+  }
+
   if (p === '/api/register') {
     if (M !== 'POST') return json(res, 405, { ok: false, error: `use POST ${URL_}/api/register?github=<login>&wallet=<address>` });
     if (crossSite(req)) return json(res, 403, { ok: false, error: `Register from ${URL_} or with the commands in ${URL_}/join.txt.` });
@@ -659,6 +741,7 @@ async function handle(req, res) {
   if (M !== 'GET' && M !== 'HEAD') return json(res, 405, { error: 'method not allowed' });
   if (p === '/' || p === '/index.html') return serveFile(res, 'index.html');
   if (/^\/m\/[^/]+\/?$/.test(p)) return serveFile(res, 'member.html');
+  if (p === '/live' || p === '/live/') return serveFile(res, 'live.html');
   if (p === '/admin' || p === '/admin/') return serveFile(res, 'admin.html');
   return serveFile(res, p.slice(1));
 }
@@ -791,6 +874,7 @@ server.listen(config.port, () => {
   console.log(`  site       ${URL_}/`);
   console.log(`  agents     ${URL_}/join.txt   ${URL_}/skill.md`);
   console.log(`  dashboard  ${URL_}/admin`);
+  console.log(`  live       ${URL_}/live   ${live.configured ? 'signed snapshots from the operator dashboard' : "OFF: set LIVE_PUBKEY to the publisher's public key (npm run live:keygen prints it)"}`);
   console.log(`  record     ${config.pnp.data} (contributors at most every ${config.pnp.contributorsSeconds}s)`);
   console.log(`  gist check ${gh.tokenSet ? 'with a read-only GitHub token' : 'WITHOUT A GITHUB TOKEN: GitHub allows about 60 checks an hour, so a few people can block sign-ups. Set GITHUB_TOKEN in production.'}`);
   console.log(`  team       ${[...TEAM].map((h) => `@${h}`).join(', ') || '(none)'}: never members, never credited`);
