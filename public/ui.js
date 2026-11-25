@@ -4,9 +4,11 @@ export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const REDUCE = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export const fmt = (n) => (n === null || n === undefined || Number.isNaN(+n) ? '—' : Number(n).toLocaleString('en-US'));
-export const hhmmss = (iso) => (iso ? new Date(iso).toISOString().slice(11, 19) : '--:--:--');
-export const ymd = (iso) => (iso ? new Date(iso).toISOString().slice(0, 16).replace('T', ' ') : '—');
+const validTime = (iso) => !!iso && Number.isFinite(Date.parse(iso));
+export const hhmmss = (iso) => (validTime(iso) ? new Date(iso).toISOString().slice(11, 19) : '--:--:--');
+export const ymd = (iso) => (validTime(iso) ? new Date(iso).toISOString().slice(0, 16).replace('T', ' ') : '—');
 export function ago(iso) {
+  if (!validTime(iso)) return '—';
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
   if (s < 60) return `${Math.floor(s)}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
@@ -43,23 +45,6 @@ export function toast(msg, ms = 1800) {
   toastTimer = setTimeout(() => el.classList.remove('on'), ms);
 }
 
-const GLYPHS = '01∀∃¬∧∨→↔⊢⊨λΣπ∞≠≤≥#%/<>∈∉⊂';
-export function scramble(el, dur = 650) {
-  const final = el.textContent;
-  if (REDUCE) return;
-  const t0 = performance.now();
-  const step = (t) => {
-    const p = Math.min(1, (t - t0) / dur);
-    const keep = Math.floor(final.length * p);
-    let s = final.slice(0, keep);
-    for (let i = keep; i < final.length; i++) s += final[i] === ' ' ? ' ' : GLYPHS[(Math.random() * GLYPHS.length) | 0];
-    el.textContent = s;
-    if (p < 1) requestAnimationFrame(step);
-    else el.textContent = final;
-  };
-  requestAnimationFrame(step);
-}
-
 export function countTo(el, to, dur = 900) {
   if (!el) return;
   if (to === null || to === undefined || Number.isNaN(+to)) { el.textContent = '—'; return; }
@@ -77,7 +62,7 @@ export function countTo(el, to, dur = 900) {
 }
 
 // A 5x5 mirrored block identicon for a wallet: the same wallet always draws the same mark.
-export function identicon(seed, fg = '#ecece6', bg = '#121210') {
+export function identicon(seed, fg = '#8A6A1E', bg = '#EFE7D6') {
   let h = 2166136261;
   for (const ch of String(seed)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
   let rects = '';
@@ -95,12 +80,27 @@ export function identicon(seed, fg = '#ecece6', bg = '#121210') {
 }
 
 export const looksSolana = (s) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(s || ''));
+export const looksLogin = (s) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(String(s || ''));
+// What people type for a GitHub account: "alice", "@alice" or "https://github.com/alice".
+export const normLogin = (s) => String(s || '').trim().replace(/^https?:\/\/(www\.)?github\.com\//i, '').replace(/^@/, '').replace(/\/+$/, '');
 export const solAmount = (s) => Number(s || 0).toLocaleString('en-US', { maximumFractionDigits: 4 });
+export const shortWallet = (w) => (w ? `${w.slice(0, 4)}…${w.slice(-4)}` : '—');
 
-// Replace the default project name, ticker and team account everywhere they are marked.
-export function fillProject(p, rewards, handle) {
+// A member's GitHub picture. Only valid usernames reach this, and the result is escaped anyway.
+export const avatar = (login, size = 80) => `https://github.com/${encodeURIComponent(login)}.png?size=${size}`;
+// <img> for a GitHub picture: no referrer, lazy, falls back to the wallet's identicon.
+export function avatarImg(login, cls = 'ident', size = 48, seed = login) {
+  return `<img class="${esc(cls)} gh-avatar" alt="" loading="lazy" referrerpolicy="no-referrer" src="${esc(avatar(login, size))}" data-fallback="${esc(identicon(seed))}">`;
+}
+// Swap broken GitHub pictures for the identicon (CSP forbids inline onerror handlers).
+document.addEventListener('error', (e) => {
+  const t = e.target;
+  if (t instanceof HTMLImageElement && t.dataset.fallback && t.src !== t.dataset.fallback) t.src = t.dataset.fallback;
+}, true);
+
+// Replace the default project name and ticker everywhere they are marked.
+export function fillProject(p, rewards) {
   $$('[data-p="name"]').forEach((n) => (n.textContent = p.name));
   $$('[data-p="ticker"]').forEach((n) => (n.textContent = p.ticker));
-  if (handle) $$('[data-p="handle"]').forEach((n) => (n.textContent = `@${handle}`));
   if (rewards) $$('[data-p="split-c"]').forEach((n) => (n.textContent = rewards.split.contributors));
 }

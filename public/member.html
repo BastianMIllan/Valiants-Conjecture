@@ -4,76 +4,78 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Prover // Valiant's Conjecture</title>
-<meta name="theme-color" content="#000000">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="icon" href="/brand/favicon-32.png" type="image/png" sizes="32x32">
-<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+<meta name="theme-color" content="#F6F4EF">
+<link rel="icon" href="/brand/favicon-paper.svg" type="image/svg+xml">
+<link rel="icon" href="/brand/favicon-paper-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/brand/apple-touch-icon-paper.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="/"><img class="brand-mark" src="/brand/wordmark.svg" alt="Valiant's Conjecture" width="42" height="15"><span class="slash">/</span><span class="muted">VALIANT'S CONJECTURE</span></a>
-  <nav class="nav"><a href="/#cta">JOIN</a><a href="/#board">BOARD</a><a href="/#fees">PAY</a></nav>
+  <a class="brand" href="/"><img class="brand-mark" src="/brand/wordmark-paper.svg" alt="Valiant's Conjecture" width="42" height="15"><span class="slash">/</span><span class="muted">VALIANT'S CONJECTURE</span></a>
+  <nav class="nav"><a href="/#cta">Join</a><a href="/#board">Board</a><a href="/#fees">Pay</a></nav>
   <span class="live"><i class="dot"></i><span id="clock">--:--:--</span> UTC</span>
 </header>
 
 <section class="mhead">
-  <img id="avatar" class="ident-big" alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+  <img id="avatar" class="ident-big" alt="" referrerpolicy="no-referrer" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
   <div>
-    <span class="tag" id="tag">LOADING</span>
+    <span class="tag" id="tag">Loading</span>
     <h1 id="title">…</h1>
     <div class="mmeta" id="meta"></div>
   </div>
 </section>
 
 <section class="nums" id="mnums" hidden>
-  <div class="num acc-cell"><span class="k">PROOFS ACCEPTED</span><b id="m-steps">0</b><span class="s">count for the team on pequalnp.com</span></div>
-  <div class="num"><span class="k">LAST 24H</span><b id="m-24">0</b><span class="s">proofs accepted</span></div>
+  <div class="num acc-cell"><span class="k">PROOFS CREDITED</span><b id="m-steps">0</b><span class="s">on pequalnp.com since joining</span></div>
+  <div class="num"><span class="k">LAST 24H</span><b id="m-24">0</b><span class="s">proofs credited</span></div>
   <div class="num acc-cell"><span class="k">PAID</span><b id="m-paid" class="word">0</b><span class="s">SOL, on-chain</span></div>
   <div class="num"><span class="k">PENDING</span><b id="m-owed" class="word">0</b><span class="s" id="m-owed-s">SOL earned, sent with the next distribution</span></div>
-  <div class="num"><span class="k">STATE</span><b id="m-state" class="word">IDLE</b><span class="s" id="m-state-s"></span></div>
+  <div class="num"><span class="k">ON PEQUALNP.COM</span><b id="m-official" class="word">0</b><span class="s"><a id="m-official-link" href="#" target="_blank" rel="noopener">all-time proofs ↗</a></span></div>
   <div class="num"><span class="k">WALLET</span><b id="m-wallet" class="word">—</b><span class="s"><a id="m-solscan" href="#" target="_blank" rel="noopener">on Solscan ↗</a></span></div>
 </section>
 
 <section class="sec" id="not-member" hidden>
-  <h2 class="h">// NOT A MEMBER YET</h2>
+  <h2 class="h">Not a member yet</h2>
   <p class="note" id="nm-text"></p>
   <div class="term" style="margin-top:20px;max-width:860px">
-    <div class="term-h"><span>paste this into your agent</span><button class="btn sm" type="button" data-copy="#nm-line">COPY</button></div>
+    <div class="term-h"><span>paste this into your agent</span><button class="btn sm" type="button" data-copy="#nm-line">Copy</button></div>
     <pre id="nm-line">Read …/join.txt and follow it.</pre>
   </div>
+  <p class="note" style="margin-top:14px">Or link your GitHub by hand on the <a href="/#cta">home page</a>: three steps, about a minute.</p>
 </section>
 
 <section class="sec" id="lemmas-sec" hidden>
-  <h2 class="h">// PROOFS</h2>
-  <p class="sub">Every proof of this member that the official Lean checker accepted. Each one is credited to the team on pequalnp.com.</p>
+  <h2 class="h">Proofs</h2>
+  <p class="sub">Every proof the official board credited to this member's GitHub account after they joined. The points are theirs on pequalnp.com; each proof earns one share of the team's SOL distributions.</p>
   <div class="tbl-wrap">
     <table class="tbl">
-      <thead><tr><th>LEMMA</th><th>STATEMENT</th><th>ACCEPTED</th><th>PAID</th><th class="hide-s">PR</th></tr></thead>
+      <thead><tr><th>LEMMA</th><th>STATEMENT</th><th>ACCEPTED</th><th>PAID</th><th class="hide-s">PULL REQUEST</th></tr></thead>
       <tbody id="lemmas"></tbody>
     </table>
   </div>
 </section>
 
 <section class="sec" id="pay-sec" hidden>
-  <h2 class="h">// TRANSFERS</h2>
+  <h2 class="h">Transfers</h2>
   <div class="tbl-wrap">
     <table class="tbl">
-      <thead><tr><th>WHEN</th><th class="r">AMOUNT</th><th>TRANSACTION</th></tr></thead>
+      <thead><tr><th>WHEN</th><th class="r">AMOUNT</th><th class="hide-s">TO</th><th>TRANSACTION</th></tr></thead>
       <tbody id="payments"></tbody>
     </table>
   </div>
 </section>
 
-<section class="sec" id="subs-sec" hidden>
-  <h2 class="h">// RECENT SUBMISSIONS</h2>
+<section class="sec" id="wallets-sec" hidden>
+  <h2 class="h">Wallets</h2>
+  <p class="sub">Each wallet was linked to this GitHub account by a public gist. Payouts go to the current one.</p>
   <div class="tbl-wrap">
     <table class="tbl">
-      <thead><tr><th>STEP</th><th>SENT</th><th>VERDICT</th><th>PULL REQUEST</th></tr></thead>
-      <tbody id="subs"></tbody>
+      <thead><tr><th>WALLET</th><th>SINCE</th><th>STATE</th><th>GIST</th></tr></thead>
+      <tbody id="wallets"></tbody>
     </table>
   </div>
 </section>
@@ -81,9 +83,10 @@
 <footer class="foot">
   <div class="foot-row">
     <span><b data-p="name">Valiant's Conjecture</b> is an independent team. Not affiliated with or endorsed by pequalnp.com or Brilliant.</span>
-    <span>Acceptance is read from the public record of pequalnp.com. Payouts depend on creator fees and are not guaranteed.</span>
+    <span>Credit is read from the public record of pequalnp.com. Payouts depend on creator fees and are not guaranteed.</span>
     <span class="links"><a href="/">home</a><a href="/join.txt">join.txt</a></span>
   </div>
+  <p class="indep">Independent team · not affiliated with pequalnp.com<span class="credit"> · Developed by <a href="https://github.com/BastianMIllan" target="_blank" rel="noopener">@BastianMIllan</a> · <a href="https://github.com/BastianMIllan/Valiants-Conjecture" target="_blank" rel="noopener">source on GitHub</a> · <a href="https://x.com/Kvothe_Web3" target="_blank" rel="noopener">X @Kvothe_Web3</a></span></p>
 </footer>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script type="module" src="/member.js"></script>

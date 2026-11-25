@@ -1,44 +1,57 @@
-import { $, fmt, ymd, ago, esc, copyText, countTo, fillProject, identicon, solAmount } from '/ui.js';
+// A member's public page: /m/<wallet> or /m/<github username>.
+import { $, fmt, ymd, ago, esc, copyText, countTo, fillProject, identicon, avatar, solAmount, shortWallet } from '/ui.js';
 
-const PNP = 'https://pequalnp.com';
-const wallet = decodeURIComponent(location.pathname.split('/')[2] || '');
-const short = (w) => `${w.slice(0, 4)}…${w.slice(-4)}`;
+const id = decodeURIComponent(location.pathname.split('/')[2] || '');
 
 async function main() {
-  const [mr, sr] = await Promise.all([fetch(`/api/member/${encodeURIComponent(wallet)}`), fetch('/api/state')]);
+  const [mr, sr] = await Promise.all([fetch(`/api/member/${encodeURIComponent(id)}`), fetch('/api/state')]);
   const s = await sr.json();
-  fillProject(s.project, s.rewards, s.handle);
+  const PNP = s.official?.site || 'https://pequalnp.com';
+  fillProject(s.project, s.rewards);
   const m = await mr.json();
   if (!mr.ok) {
-    $('#tag').textContent = 'ERROR';
+    $('#tag').textContent = 'Error';
     $('#title').textContent = m.error || 'not found';
     return;
   }
   const cluster = s.cluster && s.cluster !== 'mainnet-beta' ? `?cluster=${encodeURIComponent(s.cluster)}` : '';
-  $('#avatar').src = identicon(wallet);
+  const solscan = (w) => `https://solscan.io/account/${encodeURIComponent(w)}${cluster}`;
 
   if (!m.member) {
-    document.title = `${short(wallet)} // ${s.project.name}`;
-    $('#title').textContent = short(wallet);
-    $('#tag').textContent = 'NOT A MEMBER';
+    const label = m.github ? `@${m.github}` : shortWallet(m.wallet || id);
+    document.title = `${label} // ${s.project.name}`;
+    $('#avatar').src = m.github ? avatar(m.github, 160) : identicon(m.wallet || id);
+    $('#avatar').dataset.fallback = identicon(id);
+    if (m.github) $('#avatar').classList.add('gh-avatar');
+    $('#title').textContent = label;
+    $('#tag').textContent = 'Not a member';
     $('#tag').classList.add('no');
     $('#not-member').hidden = false;
-    $('#nm-text').textContent = `This wallet has not joined ${s.project.name} yet. If it is yours, paste the line below into your coding agent: it registers this wallet and starts proving.`;
-    $('#nm-line').textContent = `Read ${s.url}/join.txt and follow it. Pay my rewards to ${wallet}.`;
+    $('#nm-text').textContent = m.github
+      ? `@${m.github} has not joined ${s.project.name} yet. If this is your GitHub account, paste the line below into your coding agent: it links your account to your wallet with a public gist, registers you and starts proving the official way.`
+      : `This wallet has not joined ${s.project.name} yet. If it is yours, paste the line below into your coding agent: it links your GitHub account to this wallet with a public gist, registers you and starts proving the official way.`;
+    let line = `Read ${s.url}/join.txt and follow it.`;
+    if (m.github) line += ` My GitHub is @${m.github}.`;
+    if (m.wallet) line += ` Pay my rewards to ${m.wallet}.`;
+    $('#nm-line').textContent = line;
     $('[data-copy]').addEventListener('click', async (e) => {
       await copyText($('#nm-line').textContent);
-      e.target.textContent = 'COPIED';
+      e.target.textContent = 'Copied';
     });
     return;
   }
 
-  document.title = `${m.display} // ${s.project.name}`;
-  $('#title').textContent = m.display;
-  $('#tag').textContent = 'TEAM MEMBER';
+  document.title = `@${m.github} // ${s.project.name}`;
+  $('#avatar').src = avatar(m.github, 160);
+  $('#avatar').dataset.fallback = identicon(m.wallet);
+  $('#avatar').classList.add('gh-avatar');
+  $('#title').textContent = `@${m.github}`;
+  $('#tag').textContent = 'Member';
   $('#meta').innerHTML = [
+    `<a href="https://github.com/${encodeURIComponent(m.github)}" target="_blank" rel="noopener">github.com/${esc(m.github)} ↗</a>`,
     `joined ${esc(ymd(m.joined_at))} UTC`,
-    m.name ? esc(short(wallet)) : '',
-    m.last_proof_at ? `last proof ${esc(ago(m.last_proof_at))}` : 'no accepted proof yet',
+    m.last_proof_at ? `last credited proof ${esc(ago(m.last_proof_at))}` : 'no credited proof yet',
+    m.gist ? `<a href="${esc(m.gist)}" target="_blank" rel="noopener">verified by gist ↗</a>` : '',
   ].filter(Boolean).map((x) => `<span>${x}</span>`).join('');
 
   $('#mnums').hidden = false;
@@ -47,23 +60,22 @@ async function main() {
   $('#m-paid').textContent = solAmount(m.paid);
   $('#m-owed').textContent = solAmount(m.owed);
   $('#m-owed-s').textContent = +m.owed > 0 && +m.owed < +s.rewards.min_payout ? `SOL earned, sent once it reaches ${s.rewards.min_payout}` : 'SOL earned, sent with the next distribution';
-  $('#m-state').textContent = m.active ? 'WORKING' : 'IDLE';
-  $('#m-state').style.color = m.active ? 'var(--acc)' : '';
-  $('#m-state-s').textContent = m.working_on ? `on ${m.working_on}` : 'no step held right now';
-  $('#m-wallet').textContent = short(wallet);
-  $('#m-solscan').href = `https://solscan.io/account/${wallet}${cluster}`;
+  $('#m-official').textContent = fmt(m.official_steps);
+  $('#m-official-link').href = m.official_url || `${PNP}/a/${encodeURIComponent(m.github)}`;
+  $('#m-wallet').textContent = shortWallet(m.wallet);
+  $('#m-solscan').href = solscan(m.wallet);
 
   $('#lemmas-sec').hidden = false;
   $('#lemmas').innerHTML = m.credits.length
     ? m.credits.map((c) => `
       <tr>
-        <td><a href="${PNP}/lemma.html#${encodeURIComponent(c.id)}" target="_blank" rel="noopener"><b>${esc(c.id)}</b></a></td>
+        <td><a href="${esc(PNP)}/lemma.html#${encodeURIComponent(c.id)}" target="_blank" rel="noopener"><b>${esc(c.id)}</b></a>${c.kind ? ` <span class="kind">${esc(c.kind)}</span>` : ''}</td>
         <td class="wrap">${esc(c.title)}</td>
         <td class="muted">${esc(ymd(c.at))}</td>
         <td>${c.revoked ? '<span class="badge no">withdrawn</span>' : c.paid_in ? '<span class="badge paid">in payout</span>' : '<span class="badge no">pending</span>'}</td>
-        <td class="hide-s">${c.pr_url ? `<a href="${esc(c.pr_url)}" target="_blank" rel="noopener">PR ↗</a>` : ''}</td>
+        <td class="hide-s">${c.pr_url ? `<a href="${esc(c.pr_url)}" target="_blank" rel="noopener">#${esc(c.pr_url.split('/').pop())} ↗</a>` : `<span class="muted">${esc(c.id)}</span>`}</td>
       </tr>`).join('')
-    : `<tr><td colspan="5" class="empty">NO ACCEPTED PROOF YET. THE FIRST ONE IS THE HARDEST.</td></tr>`;
+    : `<tr><td colspan="5" class="empty">No credited proof yet. Every proof the official board credits to @${esc(m.github)} from now on counts.</td></tr>`;
 
   if (m.payments.length) {
     $('#pay-sec').hidden = false;
@@ -71,21 +83,21 @@ async function main() {
       <tr>
         <td class="muted">${esc(ymd(p.at))}</td>
         <td class="r"><b>${esc(p.amount)} SOL</b></td>
-        <td><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.sig.slice(0, 10))}… ↗</a></td>
+        <td class="hide-s muted">${esc(shortWallet(p.wallet))}</td>
+        <td><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(String(p.sig).slice(0, 10))}… ↗</a></td>
       </tr>`).join('');
   }
-  if (m.submissions.length) {
-    $('#subs-sec').hidden = false;
-    const tone = { ACCEPTED: 'yes', REJECTED: 'no', FAULT: 'no', pending: 'no' };
-    $('#subs').innerHTML = m.submissions.map((x) => `
+  if (m.wallets.length) {
+    $('#wallets-sec').hidden = false;
+    $('#wallets').innerHTML = m.wallets.map((w) => `
       <tr>
-        <td><b>${esc(x.gap || '—')}</b></td>
-        <td class="muted">${esc(ymd(x.at))}</td>
-        <td><span class="badge ${tone[x.verdict] || 'no'}">${esc(String(x.verdict).toLowerCase())}</span></td>
-        <td>${x.pr ? `<a href="${esc(x.pr)}" target="_blank" rel="noopener">${esc(x.pr.split('/').slice(-2).join(' #'))} ↗</a>` : ''}</td>
+        <td><a href="${esc(solscan(w.wallet))}" target="_blank" rel="noopener">${esc(shortWallet(w.wallet))} ↗</a></td>
+        <td class="muted">${esc(ymd(w.since))}</td>
+        <td>${w.current ? '<span class="badge yes">current</span>' : '<span class="badge no">earlier</span>'}</td>
+        <td>${w.gist ? `<a href="${esc(w.gist)}" target="_blank" rel="noopener">gist ↗</a>` : '—'}</td>
       </tr>`).join('');
   }
 }
 
 setInterval(() => { $('#clock').textContent = new Date().toISOString().slice(11, 19); }, 1000);
-main().catch((e) => { console.error(e); $('#tag').textContent = 'ERROR'; });
+main().catch((e) => { console.error(e); $('#tag').textContent = 'Error'; });

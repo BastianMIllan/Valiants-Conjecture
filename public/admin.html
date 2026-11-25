@@ -5,29 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Internal // Valiant's Conjecture</title>
-<meta name="theme-color" content="#000000">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="icon" href="/brand/favicon-32.png" type="image/png" sizes="32x32">
-<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+<meta name="theme-color" content="#F6F4EF">
+<link rel="icon" href="/brand/favicon-paper.svg" type="image/svg+xml">
+<link rel="icon" href="/brand/favicon-paper-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/brand/apple-touch-icon-paper.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/app.css">
 <link rel="stylesheet" href="/admin.css">
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="/"><img class="brand-mark" src="/brand/wordmark.svg" alt="Valiant's Conjecture" width="42" height="15"><span class="slash">/</span><span class="acc">INTERNAL</span></a>
+  <a class="brand" href="/"><img class="brand-mark" src="/brand/wordmark-paper.svg" alt="Valiant's Conjecture" width="42" height="15"><span class="slash">/</span><span class="acc">INTERNAL</span></a>
   <span class="sync" id="sync">sync —</span>
-  <button class="tb" type="button" id="btn-sync" hidden>SYNC NOW</button>
-  <button class="tb" type="button" id="btn-out" hidden>LOG OUT</button>
+  <button class="tb" type="button" id="btn-sync" hidden>Sync now</button>
+  <button class="tb" type="button" id="btn-out" hidden>Log out</button>
 </header>
 
 <section class="gate" id="gate">
   <form id="login" class="panel">
-    <h1>// INTERNAL DASHBOARD</h1>
+    <h1>Internal dashboard</h1>
     <p class="muted">Password: the ADMIN_TOKEN env var, or the file data/admin-token.txt on the server.</p>
-    <div class="field"><input id="pw" type="password" autocomplete="current-password" placeholder="password" required><button class="btn" type="submit">ENTER</button></div>
+    <div class="field"><input id="pw" type="password" autocomplete="current-password" placeholder="password" required><button class="btn" type="submit">Enter</button></div>
     <p class="err" id="login-err"></p>
   </form>
 </section>
@@ -35,16 +35,16 @@
 <main id="app" hidden>
   <section class="nums">
     <div class="num"><span class="k">MEMBERS</span><b id="a-members">0</b><span class="s" id="a-members-s"></span></div>
-    <div class="num"><span class="k">WORKING NOW</span><b id="a-active">0</b><span class="s" id="a-active-s"></span></div>
-    <div class="num acc-cell"><span class="k">OUR PROOFS ON PEQUALNP</span><b id="a-ours">0</b><span class="s" id="a-ours-s"></span></div>
+    <div class="num"><span class="k">ACTIVE 24H</span><b id="a-active">0</b><span class="s" id="a-active-s"></span></div>
+    <div class="num acc-cell"><span class="k">PROOFS CREDITED</span><b id="a-proofs">0</b><span class="s" id="a-proofs-s"></span></div>
     <div class="num"><span class="k">UNPAID PROOFS</span><b id="a-unpaid">0</b><span class="s">waiting for funds</span></div>
     <div class="num acc-cell"><span class="k">OWED</span><b id="a-owed" class="word">0</b><span class="s">SOL allocated, not sent yet</span></div>
     <div class="num"><span class="k">PAID</span><b id="a-paid" class="word">0</b><span class="s">SOL sent, all time</span></div>
   </section>
 
   <section class="sec">
-    <div class="sec-h"><h2 class="h">// PAY WALLET</h2>
-      <div class="controls"><button class="btn" type="button" id="btn-run">RUN NOW</button><button class="btn" type="button" id="btn-pause">PAUSE</button></div>
+    <div class="sec-h"><h2 class="h">Team treasury</h2>
+      <div class="controls"><button class="btn" type="button" id="btn-run">Run now</button><button class="btn" type="button" id="btn-pause">Pause</button></div>
     </div>
     <div class="banner" id="pay-banner" hidden></div>
     <div class="kv" id="pay-kv"></div>
@@ -58,15 +58,15 @@
   </section>
 
   <section class="sec">
-    <h2 class="h">// CONTRIBUTORS</h2>
+    <h2 class="h">Contributors</h2>
     <div class="sec-h" style="margin-bottom:14px">
-      <p class="sub" style="margin:0">Ranked by accepted proofs. Every proof is credited to our handle on pequalnp.com and traced here to the member who sent it.</p>
+      <p class="sub" style="margin:0">Ranked by credited proofs: the proofs the official record lists for each member's own GitHub account since they joined.</p>
       <div class="controls">
-        <input id="filter" type="search" placeholder="filter name or wallet">
-        <button class="btn" type="button" id="btn-export">EXPORT CSV</button>
+        <input id="filter" type="search" placeholder="filter GitHub or wallet">
+        <button class="btn" type="button" id="btn-export">Export CSV</button>
       </div>
     </div>
-    <div class="tbl-wrap">
+    <div class="tbl-wrap rows">
       <table class="tbl">
         <thead><tr><th>#</th><th>MEMBER</th><th>WALLET</th><th class="r">PROOFS</th><th class="r">UNPAID</th><th class="r">OWED</th><th class="r">PAID</th><th class="r">24H</th><th>STATE</th><th></th></tr></thead>
         <tbody id="members"></tbody>
@@ -75,37 +75,30 @@
   </section>
 
   <section class="sec">
-    <h2 class="h">// DESK</h2>
-    <div class="kv" id="desk-kv"></div>
-    <h3 class="h3">STEPS WE HOLD</h3>
+    <h2 class="h">Official record</h2>
+    <div class="kv" id="record-kv"></div>
+    <h3 class="h3">SIGN-UPS AND WALLET CHANGES</h3>
     <div class="tbl-wrap">
       <table class="tbl">
-        <thead><tr><th>STEP</th><th>KIND</th><th>MEMBERS ON IT</th><th>SINCE</th><th>RENEWED</th></tr></thead>
-        <tbody id="leases"></tbody>
-      </table>
-    </div>
-    <h3 class="h3">PULL REQUESTS</h3>
-    <div class="tbl-wrap">
-      <table class="tbl">
-        <thead><tr><th>SENT</th><th>MEMBER</th><th>STEP</th><th>VERDICT</th><th>PULL REQUEST</th><th class="r">FIXES</th></tr></thead>
-        <tbody id="subs"></tbody>
+        <thead><tr><th>WHEN</th><th>GITHUB</th><th>WALLET</th><th>RESULT</th></tr></thead>
+        <tbody id="registrations"></tbody>
       </table>
     </div>
   </section>
 
   <section class="sec">
-    <h2 class="h">// UNATTRIBUTED</h2>
-    <p class="sub">Proofs credited to our handle on pequalnp.com that did not come through the app (or whose pull request we cannot match). They are paid to nobody until you attribute them.</p>
+    <h2 class="h">Recent credits</h2>
+    <p class="sub">The latest proofs credited to members. A proof that leaves the official record before it is paid is withdrawn.</p>
     <div class="tbl-wrap">
       <table class="tbl">
-        <thead><tr><th>LEMMA</th><th>TITLE</th><th>ACCEPTED</th><th>PR</th><th>ATTRIBUTE TO WALLET</th></tr></thead>
-        <tbody id="unattributed"></tbody>
+        <thead><tr><th>LEMMA</th><th>TITLE</th><th>MEMBER</th><th>ACCEPTED</th><th>ALLOCATION</th><th>PR</th></tr></thead>
+        <tbody id="credits"></tbody>
       </table>
     </div>
   </section>
 
   <section class="sec">
-    <h2 class="h">// ALLOCATIONS</h2>
+    <h2 class="h">Allocations</h2>
     <p class="sub">Each time new funds were split across unpaid proofs.</p>
     <div class="tbl-wrap">
       <table class="tbl">
@@ -116,13 +109,13 @@
   </section>
 
   <section class="sec">
-    <h2 class="h">// RULES IN FORCE</h2>
+    <h2 class="h">Rules in force</h2>
     <pre class="rules-pre" id="rules"></pre>
   </section>
 </main>
 
 <dialog id="drawer" class="drawer">
-  <div class="dr-h"><b id="dr-title">—</b><button class="btn sm" type="button" id="dr-close">CLOSE</button></div>
+  <div class="dr-h"><b id="dr-title">—</b><button class="btn sm" type="button" id="dr-close">Close</button></div>
   <div class="dr-b" id="dr-body"></div>
 </dialog>
 

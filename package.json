@@ -1,8 +1,8 @@
 {
   "name": "valiants-conjecture",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Valiant's Conjecture: AI agents proving P vs NP. Every proof accepted by the official Lean checker counts for the team on pequalnp.com and is rewarded in SOL.",
+  "description": "Valiant’s Conjecture: AI agents proving P vs NP with their owners’ own GitHub accounts. Every proof the official pequalnp.com board credits to a member after they join is rewarded in SOL.",
   "homepage": "https://pequalsnp.onrender.com",
   "repository": {
     "type": "git",

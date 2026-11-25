@@ -1,9 +1,9 @@
 // Valiant's Conjecture // public site. Vanilla, no build step. Everything comes from /api/state,
-// which our server builds from the official pequalnp.com export.
-import { $, $$, fmt, hhmmss, ago, esc, copyText, toast, scramble, countTo, fillProject, identicon, looksSolana, solAmount } from '/ui.js';
+// which our server builds from the official pequalnp.com export and our own ledger.
+import { $, $$, fmt, hhmmss, ago, ymd, esc, copyText, toast, countTo, fillProject, looksSolana, looksLogin, normLogin, avatarImg, solAmount, shortWallet } from '/ui.js';
 
 const REDUCE = matchMedia('(prefers-reduced-motion: reduce)').matches;
-const PNP = 'https://pequalnp.com';
+let PNP = 'https://pequalnp.com';
 let S = null;
 let firstPaint = true;
 
@@ -14,8 +14,9 @@ async function load() {
 }
 
 // ------------------------------------------------------------------ the map: every lemma, grouped by program
-const C = { checked: '#cfcfc8', open: '#262622', dead: '#131312', acc: '#ff3b00', fg: '#ecece6', dim: '#8b8b84' };
+const C = { checked: '#9DC8AC', open: '#E2DED4', dead: '#F1EEE7', acc: '#2B6FD6', fg: '#1B1A17', dim: '#6B665B' };
 const FONT = '"JetBrains Mono", ui-monospace, monospace';
+const SANS = 'Inter, system-ui, sans-serif';
 
 class Atlas {
   constructor(canvas) {
@@ -37,8 +38,8 @@ class Atlas {
     document.fonts?.ready.then(() => this.kick());
   }
 
-  set(programs, teamIds) {
-    const team = new Set(teamIds);
+  set(programs, memberIds) {
+    const ours = new Set(memberIds);
     const cells = [];
     const groups = [];
     for (const p of programs) {
@@ -46,7 +47,7 @@ class Atlas {
       for (let i = 0; i < p.status.length; i++) {
         const id = `L-${p.key}-${String(i + 1).padStart(3, '0')}`;
         let st = p.status[i];
-        if (st === 'c') { g.proven++; if (team.has(id)) st = 'o'; }
+        if (st === 'c') { g.proven++; if (ours.has(id)) st = 'o'; }
         cells.push({ id, st, g: groups.length });
       }
       groups.push(g);
@@ -58,11 +59,12 @@ class Atlas {
         if (prev && prev.st !== cell.st) this.flash.set(i, now);
       });
     }
-    const relayout = cells.length !== this.cells.length || groups.length !== this.groups.length;
     this.cells = cells;
     this.groups = groups;
     this.byId = new Map(cells.map((c) => [c.id, c]));
-    if (relayout || !this.W) this.layout();
+    // The groups were rebuilt above without their positions (y0, rows), so lay them out on every refresh: laying out
+    // only when the counts changed left NaN positions after the first 15-second refresh and the map went blank.
+    this.layout();
     this.kick();
   }
 
@@ -130,7 +132,7 @@ class Atlas {
     ctx.textBaseline = 'alphabetic';
     for (const g of this.groups) {
       const ly = g.y0 - 9;
-      ctx.font = `700 11px ${FONT}`;
+      ctx.font = `600 11px ${SANS}`;
       ctx.fillStyle = C.fg;
       ctx.textAlign = 'left';
       ctx.fillText(g.title.toUpperCase(), 0, ly);
@@ -175,7 +177,7 @@ class Atlas {
 
 const STATUS = {
   c: 'Proven: accepted by the Lean checker',
-  o: 'Proven by a team member',
+  o: 'Proven by a member',
   j: 'Open: not proven yet',
   w: 'Being worked on right now',
   r: 'Refuted: shown false',
@@ -194,7 +196,7 @@ function wireAtlas(atlas) {
     if (i < 0) return hide();
     atlas.hover = i;
     const c = atlas.cells[i];
-    const st = c.st === 'o' ? `Proven by a ${esc(S?.project.name || '')} member` : STATUS[c.st] || c.st;
+    const st = c.st === 'o' ? `Proven by a ${esc(S?.project.name || '')} member` : esc(STATUS[c.st] || c.st);
     tip.innerHTML = `<b>${esc(c.id)}</b><span class="st">${st}</span><br><span class="st">${esc(atlas.groups[c.g].title)} · click to open</span>`;
     tip.hidden = false;
     const left = Math.min(x + 16, r.width - tip.offsetWidth);
@@ -250,13 +252,13 @@ function renderTicker(feed) {
   tickerTop = feed[0].seq;
   const items = feed.map((e) => {
     const who = e.by
-      ? e.team
-        ? `<a href="#board">${esc(S.project.name)}</a>`
+      ? e.member
+        ? `<a href="/m/${encodeURIComponent(e.by)}">@${esc(e.by)}</a>`
         : `<a href="${PNP}/a/${encodeURIComponent(e.by)}" target="_blank" rel="noopener">@${esc(e.by)}</a>`
       : '';
     const lemma = e.lemma_id ? `<a href="${PNP}/lemma.html#${encodeURIComponent(e.lemma_id)}" target="_blank" rel="noopener">${esc(e.lemma_id)}</a>` : '';
     const label = KIND[e.kind] || esc(String(e.kind).replace(/_/g, ' ').toUpperCase());
-    return `<span class="ti${e.team ? ' team' : ''}"><span class="t">${hhmmss(e.at)}</span><span class="kd k-${esc(e.kind)}">${label}</span>${lemma}${who}</span>`;
+    return `<span class="ti${e.member ? ' team' : ''}"><span class="t">${hhmmss(e.at)}</span><span class="kd k-${esc(e.kind)}">${label}</span>${lemma}${who}</span>`;
   }).join('');
   const track = $('#ticker');
   track.innerHTML = items + items; // doubled for a seamless loop
@@ -274,9 +276,9 @@ function renderNums() {
   countTo($('[data-n="outside"]'), S.official.outside.steps);
   $('#n-outside-s').textContent = `by ${fmt(S.official.outside.count)} outside provers`;
   countTo($('[data-n="members"]'), t.members);
-  $('#n-members-s').textContent = `${fmt(t.active_now)} working now`;
-  countTo($('[data-n="steps"]'), t.steps);
-  $('#n-steps-s').textContent = `${(t.share * 100).toFixed(1)}% of all outside proofs`;
+  $('#n-members-s').textContent = `${fmt(t.active_24h)} proved in the last 24 h`;
+  countTo($('[data-n="proofs"]'), t.proofs);
+  $('#n-proofs-s').textContent = t.proofs_24h ? `+${fmt(t.proofs_24h)} in the last 24 h` : 'credited to members since joining';
   $('#n-paid').textContent = solAmount(t.paid);
   $('#n-paid-s').textContent = +t.owed > 0 ? `SOL · ${solAmount(t.owed)} on its way` : 'SOL, on-chain';
   $('#h-agents').textContent = fmt(S.official.agents_now);
@@ -286,28 +288,41 @@ function renderNums() {
 function renderBoard() {
   const body = $('#board-body');
   if (!S.board.length) {
-    body.innerHTML = `<tr><td colspan="6" class="empty">NO PROOFS ON THE BOARD YET. <b>ROW 001 IS OPEN.</b><br>Add your wallet at the top of the page and paste your line into your agent.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6" class="empty">No members on the board yet. <b>Row 001 is open.</b><br>Link your GitHub at the top of the page, or paste your line into your agent.</td></tr>`;
     return;
   }
   body.innerHTML = S.board.map((m, i) => `
     <tr>
       <td class="rank">${String(i + 1).padStart(3, '0')}</td>
-      <td><a class="who" href="/m/${encodeURIComponent(m.wallet)}"><img class="ident" alt="" src="${identicon(m.wallet)}">${esc(m.display)}</a></td>
+      <td><a class="who" href="/m/${encodeURIComponent(m.login)}">${avatarImg(m.github, 'ident', 48, m.wallet)}@${esc(m.github)}</a></td>
       <td class="r steps">${fmt(m.steps)}</td>
       <td class="r hide-s">${m.steps_24h ? `+${fmt(m.steps_24h)}` : '·'}</td>
       <td class="r hide-s">${+m.paid > 0 ? `${solAmount(m.paid)} SOL` : '<span class="muted">—</span>'}</td>
-      <td>${m.active ? `<span class="state on">${m.working_on ? esc(m.working_on) : 'working'}</span>` : `<span class="state off">${m.last_proof_at ? `idle · ${ago(m.last_proof_at)}` : 'idle'}</span>`}</td>
+      <td>${m.active ? `<span class="state on">proving · ${esc(ago(m.last_proof_at))}</span>` : `<span class="state off">${m.last_proof_at ? `idle · ${esc(ago(m.last_proof_at))}` : `joined ${esc(ago(m.joined_at))}`}</span>`}</td>
     </tr>`).join('');
 }
 
-// ------------------------------------------------------------------ the payout wallet and the personal line
+// ------------------------------------------------------------------ joining: GitHub, wallet, gist, verify
 let WALLET = '';
-try { WALLET = localStorage.getItem('payout-wallet') || ''; } catch {}
+let GITHUB = '';
+let SHELL = 'sh';
+try {
+  WALLET = localStorage.getItem('payout-wallet') || '';
+  GITHUB = localStorage.getItem('github-login') || '';
+  SHELL = localStorage.getItem('shell') === 'ps' ? 'ps' : 'sh';
+} catch {}
 if (!looksSolana(WALLET)) WALLET = '';
+if (!looksLogin(GITHUB)) GITHUB = '';
+
+const A = '<address>';
+const L = '<login>';
+const fill = (tpl, login, wallet) => String(tpl || '').replaceAll(A, wallet || A).replaceAll(L, login || L);
 
 function promptLine() {
-  const base = `Read ${S?.url || location.origin}/join.txt and follow it.`;
-  return WALLET ? `${base} Pay my rewards to ${WALLET}.` : base;
+  let line = `Read ${S?.url || location.origin}/join.txt and follow it.`;
+  if (GITHUB) line += ` My GitHub is @${GITHUB}.`;
+  if (WALLET) line += ` Pay my rewards to ${WALLET}.`;
+  return line;
 }
 
 function renderPrompt() {
@@ -315,46 +330,72 @@ function renderPrompt() {
   $('#one-line').textContent = line;
   $('#t-line').textContent = line;
   const name = S?.project.name || "Valiant's Conjecture";
-  $('#skill-say').textContent = WALLET ? `"join ${name} and pay my rewards to ${WALLET}"` : `"join ${name}"`;
+  const as = GITHUB ? ` as @${GITHUB}` : '';
+  $('#skill-say').textContent = WALLET ? `"join ${name}${as} and pay my rewards to ${WALLET}"` : `"join ${name}${as}"`;
   if (S) {
-    const url = S.url;
-    const kf = `.${S.project.slug}-key`;
+    const j = S.join;
+    $('#gist-line').textContent = fill(j.gist_line, GITHUB, WALLET || '<your Solana address>');
+    $('#gist-cmd').textContent = fill(SHELL === 'ps' ? j.gist_ps : j.gist_sh, GITHUB, WALLET || '<your Solana address>');
+    // No project name in these blocks beyond the gist description: they are pasted into a shell.
     $('#t-api').textContent = [
-      `# 1. register once; the answer has "key": save it in ${kf}`,
-      `curl -s -X POST "${url}/api/register?wallet=${WALLET || '<your Solana address>'}"`,
-      ``,
-      `# 2. take a step; the answer has "assignment" and "gap"`,
-      `curl -s -H "Authorization: Bearer $(cat ${kf})" "${url}/api/desk/next"`,
-      ``,
-      // No project name in this block: it is pasted into a shell, and an apostrophe would open a quote.
-      `# 3. send the Lean file; the team opens the pull request`,
-      `curl -s -X POST -H "Authorization: Bearer $(cat ${kf})" -H "Content-Type: text/plain" \\`,
-      `     --data-binary @Proof.lean "${url}/api/submit?assignment=<assignment>"`,
+      '# 1. check that gh is signed in to your own GitHub account',
+      'gh auth status',
+      '',
+      '# 2. publish the public gist that links your GitHub to your wallet',
+      fill(j.gist_sh, GITHUB, WALLET),
+      '',
+      '# 3. register (once per wallet)',
+      fill(j.register_sh, GITHUB, WALLET),
+      '',
+      `# 4. then follow the official instructions, with your own GitHub account`,
+      `curl -s ${j.official_join}`,
+    ].join('\n');
+    $('#t-api-ps').textContent = [
+      'gh auth status',
+      fill(j.gist_ps, GITHUB, WALLET),
+      fill(j.register_ps, GITHUB, WALLET),
+      `Invoke-RestMethod ${j.official_join}`,
     ].join('\n');
   }
+  $$('.shell-switch .sw').forEach((b) => {
+    const on = b.dataset.shell === SHELL;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
   const hint = $('#cta-hint');
   if (WALLET) {
     hint.className = 'cta-hint good';
-    hint.innerHTML = `Payouts go to <b>${esc(WALLET.slice(0, 4))}…${esc(WALLET.slice(-4))}</b>. Your page: <a href="/m/${encodeURIComponent(WALLET)}">proofs and transfers →</a>`;
+    hint.innerHTML = `Payouts go to <b>${esc(shortWallet(WALLET))}</b>. Your page: <a href="/m/${encodeURIComponent(WALLET)}">proofs and transfers →</a>`;
   } else {
     hint.className = 'cta-hint';
     hint.textContent = 'Connecting only reads your address. It never asks you to sign or send anything.';
   }
 }
 
+function store(k, v) {
+  try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch {}
+}
+
 function setWallet(w) {
   WALLET = w;
-  try { if (w) localStorage.setItem('payout-wallet', w); else localStorage.removeItem('payout-wallet'); } catch {}
+  store('payout-wallet', w);
   const input = $('#wallet');
   if (input.value.trim() !== w) input.value = w;
   input.classList.remove('bad');
   renderPrompt();
 }
 
+function setGithub(g) {
+  GITHUB = g;
+  store('github-login', g);
+  $('#github').classList.remove('bad');
+  renderPrompt();
+}
+
 async function connectWallet() {
   const prov = window.phantom?.solana || window.solflare || window.backpack || window.solana;
   if (!prov?.connect) {
-    toast('NO SOLANA WALLET FOUND IN THIS BROWSER. PASTE YOUR ADDRESS.', 3200);
+    toast('No Solana wallet found in this browser. Paste your address.', 3200);
     $('#wallet').focus();
     return;
   }
@@ -365,16 +406,49 @@ async function connectWallet() {
     if (!looksSolana(w)) throw new Error('no address');
     setWallet(w);
     const b = $('#connect');
-    b.textContent = 'CONNECTED';
+    b.textContent = 'Connected';
     b.classList.add('on');
   } catch {
-    toast('CONNECTION CANCELLED');
+    toast('Connection cancelled');
   }
 }
 
-function wireWallet() {
+function verifyOut(cls, html) {
+  const out = $('#verify-out');
+  out.className = `verify-out ${cls}`;
+  out.innerHTML = html;
+}
+
+async function verify() {
+  if (!GITHUB) { $('#github').focus(); return verifyOut('bad', 'Enter your GitHub username in step 1.'); }
+  if (!WALLET) { $('#wallet').focus(); return verifyOut('bad', 'Add your Solana wallet in step 1.'); }
+  const b = $('#verify');
+  b.disabled = true;
+  b.textContent = 'Checking…';
+  verifyOut('', `Looking for the line in the public gists of <b>@${esc(GITHUB)}</b>…`);
+  try {
+    const r = await fetch('/api/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ github: GITHUB, wallet: WALLET }) });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      const what = j.wallet_changed ? 'Wallet updated: from now on your payouts go to it.' : j.already_registered ? 'You are already a member with this wallet.' : 'Welcome to the team.';
+      verifyOut('good', `<b>${esc(what)}</b> @${esc(j.github)} is a member since ${esc(ymd(j.joined_at))} UTC: every proof the official board credits to you from then on is paid in SOL. Now let your agent follow pequalnp.com's instructions with this GitHub account (the line below does it). <a href="/m/${encodeURIComponent(j.wallet)}">Your page →</a>`);
+      load().then((s) => { const prev = S; S = s; render(prev); }).catch(() => {});
+    } else {
+      verifyOut('bad', `${esc(j.error || `Could not verify (HTTP ${r.status}). Try again in a minute.`)}${j.fix ? `<br><span class="muted">${esc(j.fix)}</span>` : ''}`);
+    }
+  } catch {
+    verifyOut('bad', 'Could not reach the server. Try again in a minute.');
+  } finally {
+    b.disabled = false;
+    b.textContent = 'Verify';
+  }
+}
+
+function wireJoin() {
   const input = $('#wallet');
+  const gin = $('#github');
   if (WALLET) input.value = WALLET;
+  if (GITHUB) gin.value = GITHUB;
   $('#connect').addEventListener('click', connectWallet);
   input.addEventListener('input', () => {
     const v = input.value.trim();
@@ -385,6 +459,19 @@ function wireWallet() {
     hint.className = 'cta-hint bad';
     hint.textContent = 'That is not a Solana address (32 to 44 letters and digits).';
   });
+  gin.addEventListener('input', () => {
+    const v = normLogin(gin.value);
+    if (!v) return setGithub('');
+    if (looksLogin(v)) return setGithub(v);
+    gin.classList.add('bad');
+    verifyOut('bad', 'A GitHub username has only letters, digits and hyphens.');
+  });
+  $$('.shell-switch .sw').forEach((b) => b.addEventListener('click', () => {
+    SHELL = b.dataset.shell === 'ps' ? 'ps' : 'sh';
+    store('shell', SHELL);
+    renderPrompt();
+  }));
+  $('#verify').addEventListener('click', verify);
 }
 
 // ------------------------------------------------------------------ texts that depend on config
@@ -392,12 +479,14 @@ function renderConfig() {
   const p = S.project;
   const url = S.url;
   const skill = `join-${p.slug}`;
-  fillProject(p, S.rewards, S.handle);
+  PNP = S.official.site || PNP;
+  fillProject(p, S.rewards);
   $$('[data-p="minpay"]').forEach((n) => (n.textContent = S.rewards.min_payout));
   document.title = `${p.name} // AI agents proving P vs NP`;
   $('#t-skill-sh').textContent = `mkdir -p ~/.claude/skills/${skill} && curl -fsSL ${url}/skill.md -o ~/.claude/skills/${skill}/SKILL.md`;
   $('#t-skill-ps').textContent = `New-Item -ItemType Directory -Force "$HOME\\.claude\\skills\\${skill}" | Out-Null; Invoke-WebRequest ${url}/skill.md -OutFile "$HOME\\.claude\\skills\\${skill}\\SKILL.md"`;
   $('#skill-cmd').textContent = `/${skill}`;
+  $('#official-join').href = S.join.official_join;
   renderPrompt();
 
   const sp = S.rewards.split;
@@ -410,12 +499,11 @@ function renderConfig() {
   const pay = $('#pay-link');
   if (S.pay_wallet) {
     pay.href = `https://solscan.io/account/${S.pay_wallet}${S.cluster && S.cluster !== 'mainnet-beta' ? `?cluster=${encodeURIComponent(S.cluster)}` : ''}`;
-    pay.textContent = `team treasury ${S.pay_wallet.slice(0, 4)}…${S.pay_wallet.slice(-4)}`;
+    pay.textContent = `team treasury ${shortWallet(S.pay_wallet)}`;
   } else {
     pay.removeAttribute('href');
     pay.textContent = 'team treasury (coming soon)';
   }
-  if (S.handle) $('#official-link').href = `${PNP}/a/${encodeURIComponent(S.handle)}`;
 
   $('#ca-text').textContent = p.ca ? `${p.ca.slice(0, 6)}…${p.ca.slice(-6)}` : 'NOT LAUNCHED';
   for (const [id, href] of [['#l-x', p.x], ['#l-tg', p.telegram], ['#l-pump', p.pumpUrl]]) {
@@ -427,7 +515,7 @@ function renderConfig() {
 function announce(prev, next) {
   if (!prev) return;
   const seen = new Set(prev.feed.map((e) => e.seq));
-  const fresh = next.feed.filter((e) => !seen.has(e.seq) && e.team && e.kind === 'lemma_checked');
+  const fresh = next.feed.filter((e) => !seen.has(e.seq) && e.member && e.kind === 'lemma_checked');
   if (fresh.length) toast(`+${fresh.length} ${next.project.name}: @${fresh[0].by} proved ${fresh[0].lemma_id}`, 4200);
 }
 
@@ -437,7 +525,7 @@ function wire() {
     const ok = await copyText($(b.dataset.copy).textContent);
     b.classList.add('done');
     const t = b.textContent;
-    b.textContent = ok ? 'COPIED' : 'SELECT + COPY';
+    b.textContent = ok ? 'Copied' : 'Select and copy';
     setTimeout(() => { b.textContent = t; b.classList.remove('done'); }, 1400);
   }));
   $$('.tab').forEach((t) => t.addEventListener('click', () => {
@@ -445,19 +533,18 @@ function wire() {
     $$('.tabp').forEach((p) => p.classList.toggle('on', p.dataset.panel === t.dataset.tab));
   }));
   $('#ca').addEventListener('click', async () => {
-    if (!S?.project.ca) return toast('NOT LAUNCHED YET');
+    if (!S?.project.ca) return toast('Not launched yet');
     await copyText(S.project.ca);
-    toast('CONTRACT ADDRESS COPIED');
+    toast('Contract address copied');
   });
   const io = new IntersectionObserver((entries) => {
     for (const e of entries) {
       if (!e.isIntersecting) continue;
       io.unobserve(e.target);
-      if (e.target.matches('[data-scramble]')) scramble(e.target);
       if (e.target.id === 'split') e.target.classList.add('grow');
     }
   }, { threshold: 0.4 });
-  $$('[data-scramble], #split').forEach((n) => io.observe(n));
+  $$('#split').forEach((n) => io.observe(n));
   setInterval(() => {
     $('#clock').textContent = new Date().toISOString().slice(11, 19);
     const ok = S?.sync?.ok ? Date.parse(S.sync.ok) : 0;
@@ -470,7 +557,7 @@ function render(prev) {
   renderNums();
   renderTicker(S.feed);
   renderBoard();
-  atlas.set(S.programs, S.team_lemmas);
+  atlas.set(S.programs, S.member_lemmas);
   renderLegend();
   announce(prev, S);
   firstPaint = false;
@@ -480,12 +567,12 @@ const atlas = new Atlas($('#wall'));
 wireAtlas(atlas);
 swapOp();
 wire();
-wireWallet();
+wireJoin();
 renderPrompt();
 
 load()
   .then((s) => { S = s; render(null); })
-  .catch((e) => { console.error(e); toast('COULD NOT REACH THE RECORD. RETRYING.'); });
+  .catch((e) => { console.error(e); toast('Could not reach the record. Retrying.'); });
 setInterval(async () => {
   try {
     const prev = S;

@@ -1,9 +1,11 @@
 // Valiant's Conjecture: the team's server.
-//  - members register with a Solana wallet and get a private key for the API
-//  - the desk relay hands official steps (taken under our GitHub handle) to their agents
-//  - the PR bot opens every pull request from our account, so pequalnp.com credits us
-//  - the ledger reads the official record and credits each accepted proof to the member who sent it
-//  - the pay wallet sends SOL to members whenever it is funded
+//  - members link their own GitHub account to a Solana wallet with a public gist
+//  - they contribute to pequalnp.com with that account, the official way: their pull
+//    requests and their points are theirs on the official board
+//  - the ledger reads the official public record and credits each proof it lists for a
+//    member's GitHub account after the moment they joined, once
+//  - the team treasury pays those proofs in SOL
+// The team's own GitHub accounts are never members: the team's own proving stays separate.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,35 +13,29 @@ import crypto from 'node:crypto';
 import config from './config.js';
 import { openStore } from './lib/store.js';
 import { createPnp } from './lib/pnp.js';
-import { createDesk } from './lib/desk.js';
 import { createGithub } from './lib/github.js';
 import { createPayout } from './lib/payout.js';
-import { checkLean } from './lib/leanrules.js';
-import { isSolana, cleanName, newKey, hashKey, sha256, UserError } from './lib/verify.js';
+import { isSolana, isGithubLogin, normLogin, UserError } from './lib/verify.js';
 import { fmtUnits } from './lib/units.js';
-import { joinTxt, skillMd } from './lib/texts.js';
+import { joinTxt, skillMd, gistLine, gistCommand, registerCommand } from './lib/texts.js';
 
 const store = openStore(config.dataDir);
 const db = store.db;
-db.keys ||= {}; // sha256(key) -> wallet
-db.submissions ||= {}; // id -> { id, wallet, aid, gap_id, path, module, sha256, at, pr, verdict, ... }
-db.unattributed ||= {}; // lemma id -> credit (accepted under our handle, no matching submission)
-const pnp = createPnp();
-const desk = createDesk({ config, db, store });
-const github = createGithub({ config });
+// Keyed by GitHub logins and lemma ids from outside: no inherited keys, so a login such as
+// "constructor" is an ordinary key and never reaches Object.prototype.
+db.members = Object.assign(Object.create(null), db.members); // lower(github) -> member
+db.credits = Object.assign(Object.create(null), db.credits); // lemma id -> credit
+db.registrations ||= []; // recent sign-ups and wallet changes, for the dashboard
+const pnp = createPnp({ config });
+const gh = createGithub({ config });
 const URL_ = config.publicUrl;
-const OUR = () => (config.github.handle || '').toLowerCase();
-// The team on the official record: the current account, then any former ones
-// (PNP_FORMER_HANDLES), so a change of account never drops proofs already accepted.
-const OURS = () => (OUR() ? [...new Set([OUR(), ...config.github.formerHandles])] : []);
-const ourRecord = () => {
-  const entries = OURS().map((h) => pnp.state.byHandle.get(h)).filter(Boolean);
-  return { steps: entries.reduce((a, e) => a + (e.steps || 0), 0), lemmas: entries.flatMap((e) => e.lemmas || []) };
-};
-const ACTIVE_MS = 30 * 60 * 1000;
+const REPO = config.pnp.repo;
+const TEAM = new Set([config.github.handle, ...config.github.formerHandles].map((h) => String(h || '').toLowerCase()).filter(Boolean));
+const isTeam = (login) => TEAM.has(String(login || '').toLowerCase());
 const DAY_MS = 24 * 60 * 60 * 1000;
 const nowIso = () => new Date().toISOString();
 const short = (w) => (w ? `${w.slice(0, 4)}…${w.slice(-4)}` : '');
+const avatarOf = (login) => `https://github.com/${encodeURIComponent(login)}.png?size=80`;
 
 // ---------------------------------------------------------------- admin token
 let ADMIN = config.adminToken;
@@ -58,140 +54,191 @@ const isAdmin = (req) => {
   return got.length === want.length && crypto.timingSafeEqual(got, want);
 };
 
-// ---------------------------------------------------------------- ledger
-const weightOf = (c) => config.rewards.weights[c.kind] ?? config.rewards.weights.default ?? 1;
-const normPr = (u) => {
-  const m = String(u || '').match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/i);
-  return m ? `${m[1].toLowerCase()}#${m[2]}` : null;
-};
-
-function creditIndex() {
-  const idx = new Map();
-  for (const [w, bucket] of Object.entries(db.credits)) for (const id of Object.keys(bucket)) idx.set(id, w);
-  for (const id of Object.keys(db.unattributed)) idx.set(id, null);
-  return idx;
+// ---------------------------------------------------------------- members
+// One GitHub account is one member. A wallet belongs to one member for good: the
+// current one and every earlier one stay theirs, so payment history never mixes.
+const walletsOf = (m) => [...new Set([...(m.wallets || []).map((x) => x.wallet), m.wallet].filter(Boolean))];
+function walletOwner(w) {
+  for (const [k, m] of Object.entries(db.members)) if (m.wallet === w || (m.wallets || []).some((x) => x.wallet === w)) return k;
+  return null;
+}
+function currentOwner(w) {
+  for (const [k, m] of Object.entries(db.members)) if (m.wallet === w) return k;
+  return null;
+}
+// A wallet (current or earlier) or a GitHub username -> the member's key.
+function resolveMember(id) {
+  if (isSolana(id)) {
+    const k = walletOwner(id);
+    if (k) return k;
+  }
+  const login = normLogin(id).toLowerCase();
+  return isGithubLogin(login) && db.members[login] ? login : null;
 }
 
-// Every lemma the official record credits to our handle is matched to the
-// submission whose pull request it came from, and credited to that member.
-let ingesting = false;
-async function ingest() {
-  const c = pnp.state.contributors;
-  if (!c || !OUR() || ingesting) return;
-  ingesting = true;
-  try {
-    const { lemmas } = ourRecord();
-    const seen = new Set(lemmas.map((l) => l.id));
-    const known = creditIndex();
-    const byPr = new Map(Object.values(db.submissions).filter((s) => s.pr).map((s) => [normPr(s.pr.url), s]));
-    let fetched = 0;
-    let changed = false;
-    for (const l of lemmas) {
-      if (known.has(l.id)) {
-        const w = known.get(l.id);
-        const cr = w ? db.credits[w][l.id] : db.unattributed[l.id];
-        if (cr?.revoked) { delete cr.revoked; changed = true; }
+// A pull request on the official repository, from a number or an address.
+const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const PR_URL = new RegExp(`^https://github\\.com/${reEsc(REPO)}/pull/(\\d{1,9})/?$`, 'i');
+function prUrl(v) {
+  if (typeof v === 'number' && Number.isInteger(v) && v > 0 && v < 1e8) return `https://github.com/${REPO}/pull/${v}`;
+  const s = String(v ?? '').trim();
+  if (/^#?\d{1,7}$/.test(s)) return `https://github.com/${REPO}/pull/${s.replace('#', '')}`;
+  const m = s.match(PR_URL);
+  return m ? `https://github.com/${REPO}/pull/${m[1]}` : null;
+}
+
+// ---------------------------------------------------------------- ledger
+const W = config.rewards.weights;
+const goodWeight = (v) => (v !== null && v !== '' && Number.isFinite(+v) && +v >= 0 ? +v : null);
+// Own keys only: a kind such as "constructor" must never reach Object.prototype.
+const weightOf = (c) => goodWeight(typeof c.kind === 'string' && Object.hasOwn(W, c.kind) ? W[c.kind] : undefined) ?? goodWeight(W.default) ?? 1;
+const kindWeights = Object.keys(W).some((k) => k !== 'default');
+
+// Every lemma the official record lists for a member's GitHub account, accepted at or
+// after the moment they joined, becomes one credit. A lemma id is credited once, ever.
+function ingest() {
+  if (!pnp.state.contributors) return false;
+  const byHandle = pnp.state.byHandle;
+  const now = nowIso();
+  let changed = false;
+  for (const [key, m] of Object.entries(db.members)) {
+    if (m.banned || isTeam(key)) continue;
+    const e = byHandle.get(key);
+    if (!e) continue;
+    const since = Date.parse(m.joined_at);
+    for (const l of e.lemmas) {
+      if (!(Date.parse(l.at) >= since)) continue;
+      const cur = db.credits[l.id];
+      if (cur) {
+        if (cur.login === key) {
+          if (cur.revoked) { delete cur.revoked; changed = true; }
+        } else if (cur.revoked && !cur.alloc) {
+          // The record moved this proof to another member before it was paid.
+          Object.assign(cur, { github: m.github, login: key, wallet: m.wallet, at: l.at, ref: l.ref, title: l.title, kind: null, pr_url: prUrl(l.ref), credited_at: now });
+          for (const k of ['revoked', 'meta_at', 'meta_tries', 'program']) delete cur[k];
+          changed = true;
+        }
         continue;
       }
-      if (fetched >= 20) break; // the rest next cycle: be gentle with the export
-      fetched++;
-      let meta;
-      try { meta = await pnp.lemma(l.id, l.ref); } catch { continue; }
-      const credit = { id: l.id, ref: l.ref, title: l.title, at: l.at, kind: meta.kind || 'unknown', program: meta.program || null, pr_url: meta.contributor?.pr_url || null };
-      let s = byPr.get(normPr(credit.pr_url));
-      if (!s && meta.artifact?.content_hash) {
-        s = Object.values(db.submissions).find((x) => x.pr && x.path === meta.artifact.lean_file && meta.artifact.content_hash === `sha256:${x.sha256}`);
-      }
-      if (s && db.members[s.wallet]) {
-        (db.credits[s.wallet] ||= {})[l.id] = { ...credit, submission: s.id };
-        Object.assign(s, { accepted: true, lemma_id: l.id, verdict: 'ACCEPTED' });
-      } else {
-        db.unattributed[l.id] = credit;
-      }
+      db.credits[l.id] = { id: l.id, github: m.github, login: key, wallet: m.wallet, at: l.at, ref: l.ref, title: l.title, kind: null, pr_url: prUrl(l.ref), credited_at: now };
       changed = true;
     }
-    if ((c.contributors || []).length) {
-      // A step that leaves the official record stops counting (unless already paid).
-      const all = [...Object.values(db.credits).flatMap((b) => Object.values(b)), ...Object.values(db.unattributed)];
-      for (const cr of all) if (!seen.has(cr.id) && !cr.revoked) { cr.revoked = nowIso(); changed = true; }
+  }
+  // A proof that leaves its member's record stops counting, unless it was already paid.
+  if (pnp.state.contributors.count > 0) {
+    for (const c of Object.values(db.credits)) {
+      if (c.alloc || c.revoked) continue;
+      if (!byHandle.get(c.login)?.ids.has(c.id)) { c.revoked = now; changed = true; }
     }
-    if (changed) { store.save(); stateCache = null; }
+  }
+  if (changed) { store.save(); stateCache = null; }
+  return changed;
+}
+
+// Each credited lemma's own file in the record: its kind and the pull request it came from.
+let enriching = false;
+async function enrich(limit = 10) {
+  if (enriching) return;
+  enriching = true;
+  let changed = false;
+  try {
+    const todo = Object.values(db.credits).filter((c) => !c.meta_at && !c.revoked).sort((a, b) => String(a.credited_at).localeCompare(String(b.credited_at))).slice(0, limit);
+    for (const c of todo) {
+      if (!c.ref) { c.meta_at = nowIso(); changed = true; continue; }
+      let meta;
+      try {
+        meta = await pnp.lemma(c.id, c.ref);
+      } catch {
+        c.meta_tries = (c.meta_tries || 0) + 1;
+        if (c.meta_tries >= 5) c.meta_at = nowIso(); // give up: the credit stands without it
+        changed = true;
+        continue;
+      }
+      if (meta && typeof meta === 'object') {
+        if (typeof meta.kind === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(meta.kind)) c.kind = meta.kind;
+        if (typeof meta.program === 'string' && /^[A-Za-z0-9_.-]{1,80}$/.test(meta.program)) c.program = meta.program;
+        const who = meta.contributor && typeof meta.contributor === 'object' ? meta.contributor : {};
+        const pr = prUrl(who.pr_url);
+        if (pr && (typeof who.github !== 'string' || who.github.toLowerCase() === c.login)) c.pr_url = pr;
+      }
+      c.meta_at = nowIso();
+      changed = true;
+    }
   } finally {
-    ingesting = false;
+    enriching = false;
+    if (changed) { store.save(); stateCache = null; }
   }
 }
 
-// The official checker's verdict on each open pull request.
-async function pollVerdicts() {
-  if (!github.configured()) return;
-  const open = Object.values(db.submissions)
-    .filter((s) => s.pr && !s.final && Date.now() - Date.parse(s.at) < 4 * DAY_MS)
-    .sort((a, b) => String(a.checked_at || '').localeCompare(String(b.checked_at || '')))
-    .slice(0, 15);
-  for (const s of open) {
-    try {
-      const v = await github.verdict(s.pr.number);
-      if (!s.accepted) s.verdict = v.verdict;
-      Object.assign(s, { verdict_url: v.verdict_url, merged: v.merged, pr_state: v.state, checked_at: nowIso() });
-      if (v.merged || v.state === 'closed') s.final = true;
-      delete s.check_error;
-    } catch (e) {
-      s.check_error = e.message;
-      s.checked_at = nowIso();
-    }
+const newestFirst = (a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id);
+
+function indexes() {
+  const credits = new Map(); // login -> [credit]
+  for (const c of Object.values(db.credits)) {
+    let a = credits.get(c.login);
+    if (!a) credits.set(c.login, (a = []));
+    a.push(c);
   }
-  if (open.length) store.save();
+  const paid = new Map(); // wallet -> lamports
+  for (const p of db.payments || []) paid.set(p.wallet, (paid.get(p.wallet) || 0n) + BigInt(p.lamports));
+  return { credits, paid };
 }
 
-function memberView(w) {
-  const m = db.members[w];
+function memberView(key, idx = indexes()) {
+  const m = db.members[key];
   const t = Date.now();
-  let steps = 0, weight = 0, day = 0, last = null;
-  for (const c of Object.values(db.credits[w] || {})) {
+  let steps = 0, weight = 0, day = 0, last = null, unallocated = 0;
+  for (const c of idx.credits.get(key) || []) {
     if (c.revoked) continue;
     steps++;
     weight += weightOf(c);
     if (t - Date.parse(c.at) < DAY_MS) day++;
     if (!last || c.at > last) last = c.at;
+    if (!c.alloc) unallocated++;
   }
-  const live = Object.values(db.assignments || {}).filter((a) => a.wallet === w && a.status === 'active' && t - Date.parse(a.last_seen) < ACTIVE_MS);
-  const paid = db.payments ? db.payments.filter((p) => p.wallet === w).reduce((a, p) => a + BigInt(p.lamports), 0n) : 0n;
+  const paid = walletsOf(m).reduce((a, w) => a + (idx.paid.get(w) || 0n), 0n);
+  const rec = pnp.state.byHandle.get(key);
   return {
-    wallet: w,
-    name: m.name || null,
-    display: m.name || short(w),
-    joined_at: m.created_at,
+    github: m.github,
+    login: key,
+    wallet: m.wallet,
+    avatar: avatarOf(m.github),
+    joined_at: m.joined_at,
     steps,
     weight,
     steps_24h: day,
     last_proof_at: last,
-    active: live.length > 0,
-    working_on: live[0] ? db.leases[live[0].lease]?.gap?.id ?? null : null,
-    owed: fmtUnits(payout.owedOf(w), 9),
+    active: day > 0,
+    official_steps: rec ? rec.steps : 0,
+    unallocated,
+    owed: fmtUnits(payout.owedOf(m.wallet), 9),
     paid: fmtUnits(paid, 9),
   };
 }
 
-// Split `lamports` across every accepted step not yet allocated, by weight.
+// Split `lamports` across every credited proof not yet allocated, by weight. Each
+// member's share goes to their current wallet.
 function allocate(lamports) {
-  const rows = [];
+  const byMember = new Map();
   let total = 0;
   let from = null, to = null;
-  for (const [w, m] of Object.entries(db.members)) {
-    if (m.banned) continue;
-    let steps = 0, weight = 0;
-    const ids = [];
-    for (const c of Object.values(db.credits[w] || {})) {
-      if (c.revoked || c.alloc) continue;
-      steps++;
-      weight += weightOf(c);
-      ids.push(c.id);
-      if (!from || c.at < from) from = c.at;
-      if (!to || c.at > to) to = c.at;
-    }
-    if (steps) { rows.push({ wallet: w, name: m.name || null, steps, weight, lemmas: ids }); total += weight; }
+  for (const c of Object.values(db.credits)) {
+    if (c.revoked || c.alloc) continue;
+    const m = db.members[c.login];
+    if (!m || m.banned || isTeam(c.login)) continue;
+    if (kindWeights && !c.meta_at) continue; // its kind is not known yet: next time
+    const w = weightOf(c);
+    let r = byMember.get(c.login);
+    if (!r) byMember.set(c.login, (r = { wallet: m.wallet, github: m.github, steps: 0, weight: 0, lemmas: [] }));
+    r.steps++;
+    r.weight += w;
+    r.lemmas.push(c.id);
+    total += w;
+    if (!from || c.at < from) from = c.at;
+    if (!to || c.at > to) to = c.at;
   }
-  if (!rows.length) return null;
+  const rows = [...byMember.values()];
+  if (!rows.length || !(total > 0)) return null;
   const scale = 1000;
   const totalS = BigInt(Math.round(total * scale));
   let dist = 0n;
@@ -203,80 +250,225 @@ function allocate(lamports) {
   }
   const next = db.epochs.reduce((n, x) => Math.max(n, +String(x.id).slice(1) || 0), 0) + 1;
   const epoch = { id: `E${String(next).padStart(4, '0')}`, created_at: nowIso(), from, to, unit: 'SOL', pool: fmtUnits(lamports, 9), total_weight: total, distributed: fmtUnits(dist, 9), dust: fmtUnits(BigInt(lamports) - dist, 9), rows };
-  for (const r of rows) for (const id of r.lemmas) db.credits[r.wallet][id].alloc = epoch.id;
+  for (const r of rows) for (const id of r.lemmas) db.credits[id].alloc = epoch.id;
   db.epochs.push(epoch);
   stateCache = null;
   return epoch;
 }
 
-const payout = createPayout({ config, db, store, allocate, isPayable: (w) => !!db.members[w] && !db.members[w].banned });
+// Version 1 members were wallets. What the treasury still owes such a wallet, if no member
+// has taken it since, is paid to that same wallet, as version 1 would have, unless banned there.
+function v1Payable(w) {
+  const v1 = db.archive_v1?.members;
+  return !!v1 && typeof v1 === 'object' && Object.hasOwn(v1, w) && !v1[w]?.banned && !walletOwner(w);
+}
+
+const payout = createPayout({
+  config, db, store, allocate,
+  isPayable: (w) => {
+    const k = currentOwner(w);
+    if (k) return !db.members[k].banned && !isTeam(k);
+    return v1Payable(w);
+  },
+});
+
+// A wallet the treasury already keeps books for (owed, paid, in a transfer, held) that no
+// member owns: a version 1 balance. A gist proves a GitHub account, not a wallet, so nobody
+// may adopt such a wallet: its balance and history would become theirs.
+function hasBooks(w) {
+  const p = db.payout || {};
+  return payout.owedOf(w) > 0n
+    || (db.payments || []).some((x) => x.wallet === w)
+    || (db.batches || []).some((b) => b.items.some((it) => it.wallet === w))
+    || (p.hold || []).includes(w) || (p.solo || []).includes(w) || Object.hasOwn(p.fails || {}, w);
+}
+
+// ---------------------------------------------------------------- registration
+const verifying = new Set();
+const noUser = new Map(); // lower(github) -> until when GitHub's "no such user" is remembered
+const isRefusal = (r) => /^refused/.test(r.result);
+function logRegistration(entry) {
+  db.registrations.push({ at: nowIso(), ...entry });
+  // Refused attempts make room first, so a burst of them never pushes real sign-ups out.
+  const refused = db.registrations.filter(isRefusal);
+  if (refused.length > 100) {
+    const drop = new Set(refused.slice(0, refused.length - 100));
+    db.registrations = db.registrations.filter((r) => !drop.has(r));
+  }
+  if (db.registrations.length > 300) db.registrations.splice(0, db.registrations.length - 300);
+}
+
+function regView(m) {
+  return {
+    github: m.github,
+    wallet: m.wallet,
+    joined_at: m.joined_at,
+    gist: m.gist || null,
+    page: `${URL_}/m/${m.wallet}`,
+    next: `Read ${config.pnp.site}/join.txt and follow it with the GitHub account @${m.github}. Every proof the official board credits to @${m.github} from now on is paid in SOL to ${short(m.wallet)}.`,
+  };
+}
+
+// Checks that need no GitHub call. null: go ahead and verify the gist.
+function preCheck(key, github, wallet) {
+  if (isTeam(key)) return { status: 403, body: { ok: false, error: `@${github} is one of the team's own accounts. It cannot join as a member.` } };
+  const m = db.members[key];
+  if (m?.banned) return { status: 403, body: { ok: false, error: 'This GitHub account is not eligible.' } };
+  const owner = walletOwner(wallet);
+  if (owner && owner !== key) return { status: 409, body: { ok: false, error: 'This wallet is already registered to another GitHub account. Use a different wallet.' } };
+  if (!owner && hasBooks(wallet)) return { status: 409, body: { ok: false, error: 'This wallet already has a payout history with the team from before. Use a different wallet.' } };
+  if (m && m.wallet === wallet) return { status: 200, body: { ok: true, ...regView(m), new_member: false, wallet_changed: false, already_registered: true } };
+  return null;
+}
+
+// When a member last changed wallets (or joined): a new wallet needs a gist made after it.
+function lastChange(m) {
+  const times = [m.joined_at, ...(m.wallets || []).map((x) => x.at)].map((t) => Date.parse(t)).filter(Number.isFinite);
+  return times.length ? Math.max(...times) : 0;
+}
+
+async function register(github, wallet) {
+  const key = github.toLowerCase();
+  const pre = preCheck(key, github, wallet);
+  if (pre) return pre;
+  const unknownUntil = noUser.get(key);
+  if (unknownUntil > Date.now()) return { status: 404, body: { ok: false, error: `GitHub has no user @${github}. Check the spelling of your GitHub username.` } };
+  if (verifying.has(key)) return { status: 429, body: { ok: false, error: `A check for @${github} is already running. Try again in a moment.` } };
+  verifying.add(key);
+  const known = db.members[key];
+  let v;
+  try {
+    v = await gh.verifyGist(github, wallet, { notBefore: known ? lastChange(known) : null });
+  } finally {
+    verifying.delete(key);
+  }
+  if (!v.ok) {
+    if (v.status === 404) noUser.set(key, Date.now() + 5 * 60 * 1000);
+    if (v.status === 422 || v.status === 404) {
+      logRegistration({ github, wallet, result: v.status === 404 ? 'refused: no such GitHub user' : v.fresh ? 'refused: no gist since the last wallet change' : 'refused: no gist with the line' });
+      store.save();
+    }
+    const body = { ok: false, error: v.error };
+    if (v.status === 422) {
+      Object.assign(body, {
+        line: gistLine(wallet),
+        command: { bash: gistCommand('sh', wallet), powershell: gistCommand('ps', wallet) },
+        fix: v.fresh
+          ? 'To change wallets, publish a new public gist on that GitHub account holding exactly that line (a gist from before your last wallet change does not count), then try again.'
+          : 'Publish a public gist on that GitHub account holding exactly that line, then try again. A gist published a moment ago can take a minute to show.',
+      });
+    }
+    return { status: v.status, body };
+  }
+  // Every account is known by GitHub's numeric id: a username can pass to someone else.
+  if (!Number.isSafeInteger(v.githubId)) return { status: 502, body: { ok: false, error: 'GitHub did not say which account owns the gist. Try again in a few minutes.' } };
+  // The ledger may have changed while GitHub answered.
+  const again = preCheck(key, v.login, wallet);
+  if (again) return again;
+  const now = nowIso();
+  let m = db.members[key];
+  if (m && Number.isSafeInteger(m.github_id) && m.github_id !== v.githubId) {
+    // The member renamed or deleted their account and someone else took the username.
+    logRegistration({ github: v.login, wallet, result: 'refused: different GitHub account' });
+    store.save();
+    return { status: 409, body: { ok: false, error: `@${v.login} now belongs to a different GitHub account than the member who registered it. Contact the team.` } };
+  }
+  const fresh = !m;
+  let moved = '0';
+  if (fresh) {
+    m = db.members[key] = { github: v.login, github_id: v.githubId, wallet, joined_at: now, gist: v.gist.url, wallets: [{ wallet, at: now, gist: v.gist.url }], banned: false, note: '' };
+  } else {
+    // A new wallet: future credits and everything not sent yet go to it. Paid history stays.
+    const mv = payout.moveOwed(m.wallet, wallet);
+    if (!mv.ok) return { status: 409, body: { ok: false, error: `Your wallet was not changed: ${mv.error}. Try again in a few minutes.` } };
+    moved = mv.moved;
+    (m.wallets ||= []).push({ wallet, at: now, gist: v.gist.url });
+    Object.assign(m, { github: v.login, github_id: m.github_id ?? v.githubId, wallet, gist: v.gist.url });
+  }
+  logRegistration({ github: v.login, wallet, result: fresh ? 'joined' : 'wallet changed' });
+  store.save();
+  stateCache = null;
+  return { status: 200, body: { ok: true, ...regView(m), new_member: fresh, wallet_changed: !fresh, moved_owed: moved } };
+}
 
 // ---------------------------------------------------------------- public views
 let stateCache = null;
 let stateAt = 0;
+const str = (v, n = 200) => (typeof v === 'string' ? v.slice(0, n) : null);
+
 function publicState() {
   if (stateCache && Date.now() - stateAt < 4000) return stateCache;
   const s = pnp.state;
   const h = s.head || {};
-  const views = Object.entries(db.members).filter(([, m]) => !m.banned).map(([w]) => memberView(w));
-  const entry = ourRecord();
-  const ourSteps = entry.steps;
-  const outsideSteps = h.outside?.steps || s.contributors?.steps || 0;
+  const idx = indexes();
+  const keys = Object.keys(db.members).filter((k) => !db.members[k].banned && !isTeam(k));
+  const views = keys.map((k) => memberView(k, idx));
+  const inTeam = new Set(keys);
   const ps = payout.status();
   stateCache = {
     project: config.project,
     url: URL_,
-    handle: config.github.handle || null,
     pay_wallet: ps.address,
     cluster: ps.cluster,
     rewards: { split: config.rewards.split, min_payout: config.payout.minPayout, interval_minutes: config.payout.intervalMinutes },
+    join: {
+      gist_line: gistLine(),
+      gist_sh: gistCommand('sh'),
+      gist_ps: gistCommand('ps'),
+      register_sh: registerCommand('sh'),
+      register_ps: registerCommand('ps'),
+      official_join: `${config.pnp.site}/join.txt`,
+    },
     official: {
+      site: config.pnp.site,
+      repo: REPO,
       generated_at: h.generated_at || null,
-      counters: h.counters || {},
-      outside: { count: h.outside?.count || 0, steps: outsideSteps },
+      counters: h.counters && typeof h.counters === 'object' ? h.counters : {},
+      outside: { count: h.outside?.count || s.contributors?.count || 0, steps: h.outside?.steps || s.contributors?.steps || 0 },
       agents_now: h.agents_now_total ?? null,
       agents_fleet: h.agents_now_fleet ?? null,
       agents_public: h.agents_now_public ?? null,
     },
     team: {
       members: views.length,
-      steps: ourSteps,
-      attributed: views.reduce((a, v) => a + v.steps, 0),
-      steps_24h: views.reduce((a, v) => a + v.steps_24h, 0),
-      active_now: views.filter((v) => v.active).length,
-      share: outsideSteps ? ourSteps / outsideSteps : 0,
+      proofs: views.reduce((a, v) => a + v.steps, 0),
+      proofs_24h: views.reduce((a, v) => a + v.steps_24h, 0),
+      active_24h: views.filter((v) => v.active).length,
       paid: ps.paid_total,
       owed: ps.owed_total,
     },
     board: views
-      .filter((v) => v.steps > 0 || v.active)
-      .sort((a, b) => b.steps - a.steps || String(b.last_proof_at).localeCompare(String(a.last_proof_at)))
-      .slice(0, 100),
-    programs: (s.map?.programs || []).map((p) => ({ key: p.key, title: p.title, status: p.status })),
-    team_lemmas: entry.lemmas.map((l) => l.id),
+      .sort((a, b) => b.steps - a.steps || String(b.last_proof_at || '').localeCompare(String(a.last_proof_at || '')) || String(a.joined_at).localeCompare(String(b.joined_at)))
+      .slice(0, 100)
+      .map(({ weight, unallocated, ...v }) => v),
+    programs: (Array.isArray(s.map?.programs) ? s.map.programs : [])
+      .filter((p) => p && typeof p.key === 'string' && typeof p.status === 'string')
+      .map((p) => ({ key: p.key, title: str(p.title) || p.key, status: p.status })),
+    member_lemmas: Object.values(db.credits).filter((c) => !c.revoked && inTeam.has(c.login)).map((c) => c.id),
     feed: (s.feed || []).slice(0, 40).map((e) => {
-      const by = e.lemma_id ? s.byLemma.get(e.lemma_id) : null;
-      return { seq: e.seq, at: e.at, kind: e.kind, lemma_id: e.lemma_id || null, by: by || null, team: !!by && OURS().includes(by.toLowerCase()) };
+      const lemma = str(e.lemma_id, 120);
+      const by = lemma ? s.byLemma.get(lemma) || null : null;
+      return { seq: e.seq ?? null, at: str(e.at, 40), kind: str(e.kind, 40) || 'event', lemma_id: lemma, by, member: !!by && inTeam.has(by.toLowerCase()) };
     }),
-    sync: { ok: s.lastOk, err: s.lastErr },
+    sync: { ok: s.lastOk, err: s.lastErr ? 'the official record could not be read just now' : null },
   };
   stateAt = Date.now();
   return stateCache;
 }
 
-function memberPublic(w) {
-  const m = db.members[w];
-  if (!m || m.banned) return { member: false, wallet: w };
-  const credits = Object.values(db.credits[w] || {})
-    .sort((a, b) => b.at.localeCompare(a.at))
-    .map((c) => ({ id: c.id, title: c.title, at: c.at, kind: c.kind, pr_url: c.pr_url, paid_in: c.alloc || null, revoked: !!c.revoked }));
-  const payments = (db.payments || []).filter((p) => p.wallet === w).slice(-50).reverse().map((p) => ({ amount: p.amount, at: p.at, sig: p.sig, url: payout.explorer(p.sig) }));
-  const submissions = Object.values(db.submissions)
-    .filter((s) => s.wallet === w)
-    .sort((a, b) => b.at.localeCompare(a.at))
-    .slice(0, 20)
-    .map((s) => ({ gap: s.gap_id, at: s.at, pr: s.pr?.url || null, verdict: s.verdict || 'pending' }));
-  return { member: true, ...memberView(w), credits, payments, submissions };
+function memberPublic(key) {
+  const m = db.members[key];
+  if (!m || m.banned || isTeam(key)) return null;
+  const idx = indexes();
+  const credits = (idx.credits.get(key) || [])
+    .slice()
+    .sort(newestFirst)
+    .map((c) => ({ id: c.id, title: c.title, at: c.at, kind: c.kind || null, ref: c.ref || null, pr_url: c.pr_url || null, wallet: c.wallet, paid_in: c.alloc || null, revoked: !!c.revoked }));
+  const ws = new Set(walletsOf(m));
+  const payments = (db.payments || []).filter((p) => ws.has(p.wallet)).slice(-50).reverse()
+    .map((p) => ({ amount: p.amount, wallet: p.wallet, at: p.at, sig: p.sig, url: payout.explorer(p.sig) }));
+  const wallets = (m.wallets || []).slice().reverse().map((x, i) => ({ wallet: x.wallet, since: x.at, gist: x.gist || null, current: i === 0 }));
+  return { member: true, ...memberView(key, idx), gist: m.gist || null, official_url: `${config.pnp.site}/a/${encodeURIComponent(m.github)}`, credits, payments, wallets };
 }
 
 // ---------------------------------------------------------------- http helpers
@@ -296,7 +488,7 @@ const CSP = [
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com",
-  "img-src 'self' data:",
+  "img-src 'self' data: https://github.com https://avatars.githubusercontent.com",
   "connect-src 'self'",
   "frame-ancestors 'none'",
   "base-uri 'none'",
@@ -336,7 +528,9 @@ async function readBody(req, limit = 16 * 1024) {
   if (!raw) return {};
   const type = req.headers['content-type'] || '';
   if (type.includes('application/x-www-form-urlencoded')) return Object.fromEntries(new URLSearchParams(raw));
-  try { return JSON.parse(raw); } catch { throw new UserError('body is not valid JSON'); }
+  let v;
+  try { v = JSON.parse(raw); } catch { throw new UserError('body is not valid JSON'); }
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
 }
 
 const buckets = new Map();
@@ -349,9 +543,30 @@ function limited(key, max, perMs) {
 setInterval(() => {
   const now = Date.now();
   for (const [k, b] of buckets) if (now - b.t > 10 * 60 * 1000) buckets.delete(k);
+  for (const [k, t] of noUser) if (t <= now) noUser.delete(k);
 }, 60 * 1000).unref();
 
-const ipOf = (req) => (process.env.TRUST_PROXY && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress || '?';
+// Behind TRUST_PROXY=<n> reverse proxies, each proxy appends the address it saw to
+// X-Forwarded-For, so the client is the n-th entry from the right. Entries further left are
+// whatever the client sent, and are never trusted.
+const PROXIES = Math.floor(+process.env.TRUST_PROXY) > 0 ? Math.floor(+process.env.TRUST_PROXY) : /^(true|yes|on)$/i.test(process.env.TRUST_PROXY || '') ? 1 : 0;
+function ipOf(req) {
+  if (PROXIES) {
+    const xs = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (xs.length >= PROXIES) return xs[xs.length - PROXIES];
+  }
+  return req.socket.remoteAddress || '?';
+}
+
+// A page on another site may not make its visitors' browsers register (each attempt costs a
+// GitHub check). Browsers say where a request comes from; programs (curl, agents) say nothing.
+function crossSite(req) {
+  const site = String(req.headers['sec-fetch-site'] || '');
+  if (site) return site !== 'same-origin' && site !== 'none';
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  try { return new URL(origin).host !== req.headers.host; } catch { return true; }
+}
 
 function serveFile(res, rel) {
   const file = path.normalize(path.join(config.publicDir, rel));
@@ -365,16 +580,9 @@ function serveFile(res, rel) {
   });
 }
 
-function memberFromKey(req) {
-  const k = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  if (!k) return null;
-  const w = db.keys[hashKey(k)];
-  const m = w && db.members[w];
-  return m && !m.banned ? m : null;
+function decodeId(s) {
+  try { return decodeURIComponent(s).trim(); } catch { return null; }
 }
-
-const safeBranch = (id) => String(id || 'step').replace(/[^A-Za-z0-9._-]/g, '-').replace(/^[.-]+/, '').slice(0, 80) || 'step';
-const safePath = (p) => typeof p === 'string' && /^[A-Za-z0-9_./-]+\.lean$/.test(p) && !p.split('/').includes('..') && !p.startsWith('/');
 
 // ---------------------------------------------------------------- routes
 async function handle(req, res) {
@@ -390,7 +598,7 @@ async function handle(req, res) {
   if (p === '/skill.md' || p === '/SKILL.md') return text(res, 200, skillMd(), 'text/markdown; charset=utf-8');
 
   // ---- public API
-  if (p === '/api/health') return json(res, 200, { ok: true, sync: pnp.state.lastOk, err: pnp.state.lastErr });
+  if (p === '/api/health') return json(res, 200, { ok: true, sync: pnp.state.lastOk, contributors: pnp.state.contributorsAt });
   if (p === '/api/state' && M === 'GET') return json(res, 200, publicState());
   // Live badges for the README (shields.io "endpoint" format).
   if ((m = p.match(/^\/api\/badge\/([a-z-]+)$/)) && M === 'GET') {
@@ -399,50 +607,45 @@ async function handle(req, res) {
     const b = {
       proven: ['lemmas proven', n(s.official.counters.checked)],
       agents: ['agents online', n(s.official.agents_now)],
-      team: ['team proofs', n(s.team.steps)],
+      proofs: ['member proofs', n(s.team.proofs)],
+      team: ['member proofs', n(s.team.proofs)], // former name of "proofs"
       members: ['members', n(s.team.members)],
       paid: ['paid out', `${Number(s.team.paid || 0).toLocaleString('en-US', { maximumFractionDigits: 3 })} SOL`],
     }[m[1]];
     if (!b) return json(res, 404, { error: 'no such badge' });
-    return send(res, 200, { schemaVersion: 1, label: b[0], message: b[1], color: 'ff3b00', labelColor: '111111', cacheSeconds: 300 }, 'application/json; charset=utf-8', {
+    return send(res, 200, { schemaVersion: 1, label: b[0], message: b[1], color: '2B6FD6', labelColor: '1B1A17', cacheSeconds: 300 }, 'application/json; charset=utf-8', {
       'access-control-allow-origin': '*',
       'cache-control': 'public, max-age=300',
     });
   }
   if ((m = p.match(/^\/api\/member\/([^/]+)$/)) && M === 'GET') {
-    const w = decodeURIComponent(m[1]);
-    if (!isSolana(w)) return json(res, 400, { error: 'not a Solana address' });
-    return json(res, 200, memberPublic(w));
+    const id = decodeId(m[1]);
+    const login = normLogin(id || '');
+    if (!id || (!isSolana(id) && !isGithubLogin(login))) return json(res, 400, { error: 'not a Solana address or a GitHub username' });
+    const key = resolveMember(id);
+    const pub = key && memberPublic(key);
+    if (!pub) return json(res, 200, { member: false, wallet: isSolana(id) ? id : null, github: isSolana(id) ? null : login });
+    return json(res, 200, pub);
   }
 
-  if (p === '/api/register' && M === 'POST') {
-    if (limited(`rg:${ip}`, 10, 60_000)) return json(res, 429, { ok: false, error: 'slow down: retry in a minute' });
+  if (p === '/api/register') {
+    if (M !== 'POST') return json(res, 405, { ok: false, error: `use POST ${URL_}/api/register?github=<login>&wallet=<address>` });
+    if (crossSite(req)) return json(res, 403, { ok: false, error: `Register from ${URL_} or with the commands in ${URL_}/join.txt.` });
+    if (limited(`rg:${ip}`, config.registerPerMinute, 60_000)) return json(res, 429, { ok: false, error: 'Too many attempts from your connection. Try again in a minute.' });
     const body = await readBody(req);
-    const wallet = String(q.wallet || body.wallet || '').trim();
+    const wallet = String(q.wallet ?? body.wallet ?? '').trim();
+    const github = normLogin(q.github ?? body.github ?? '');
     if (!isSolana(wallet)) throw new UserError('wallet must be a Solana address (base58, 32 to 44 characters)');
-    if (db.members[wallet]?.banned) return json(res, 403, { ok: false, error: 'this wallet is not eligible' });
-    const fresh = !db.members[wallet];
-    if (fresh) db.members[wallet] = { wallet, name: cleanName(q.name || body.name || ''), created_at: nowIso(), banned: false, note: '', keys: 0 };
-    const key = newKey(config.project.slug);
-    db.keys[hashKey(key)] = wallet;
-    db.members[wallet].keys = (db.members[wallet].keys || 0) + 1;
-    store.save();
-    stateCache = null;
-    return json(res, 200, {
-      ok: true,
-      wallet,
-      name: db.members[wallet].name,
-      key,
-      new_member: fresh,
-      page: `${URL_}/m/${wallet}`,
-      next: `Save the key. Then follow ${URL_}/join.txt from STEP 2.`,
-    });
+    if (!isGithubLogin(github)) throw new UserError('github must be a GitHub username (letters, digits and hyphens, up to 39 characters)');
+    if (limited(`rgl:${github.toLowerCase()}`, 6, 60_000)) return json(res, 429, { ok: false, error: `Too many attempts for @${github}. Try again in a minute.` });
+    if (limited('rg:all', 60, 60_000)) return json(res, 429, { ok: false, error: 'Many people are joining right now. Try again in a minute.' });
+    const r = await register(github, wallet);
+    return json(res, r.status, r.body);
   }
 
-  if (p.startsWith('/api/desk/') || p === '/api/submit' || p.startsWith('/api/submission/') || p === '/api/me') {
-    const mem = memberFromKey(req);
-    if (!mem) return json(res, 401, { ok: false, error: `send your key as "Authorization: Bearer <key>" (register: ${URL_}/join.txt)` });
-    return agentApi(req, res, p, q, M, mem);
+  // Version 1 endpoints. Members now contribute with their own GitHub account.
+  if (/^\/api\/(desk\/|submit$|submission\/|me$)/.test(p)) {
+    return json(res, 410, { ok: false, error: `This endpoint was retired: members now contribute with their own GitHub account. Read ${URL_}/join.txt` });
   }
 
   // ---- internal dashboard API
@@ -460,141 +663,76 @@ async function handle(req, res) {
   return serveFile(res, p.slice(1));
 }
 
-async function agentApi(req, res, p, q, M, mem) {
-  const w = mem.wallet;
-  let m;
-  if (p === '/api/me' && M === 'GET') {
-    const mine = Object.values(db.assignments || {}).filter((a) => a.wallet === w && a.status === 'active').map((a) => ({ assignment: a.id, gap: a.gap_id }));
-    return json(res, 200, { ok: true, ...memberPublic(w), assignments: mine });
-  }
-
-  if (p === '/api/desk/next' && M === 'GET') {
-    if (limited(`nx:${w}`, 20, 60_000)) return json(res, 429, { ok: false, error: 'one request every few seconds at most' });
-    // Never take a step from the official desk that we could not submit.
-    if (!github.configured()) return json(res, 503, { ok: false, gap: null, error: 'the team is not open for proofs yet: you are registered, try again later' });
-    const r = await desk.next(w, { hard: q.hard === '1', another: q.another === '1' });
-    return json(res, 200, { ok: true, ...r });
-  }
-  if (p === '/api/desk/beat' && M === 'POST') {
-    if (limited(`bt:${w}`, 12, 60_000)) return json(res, 429, { ok: false, error: 'renew every 10 minutes' });
-    const r = desk.beat(String(q.assignment || ''), w);
-    return json(res, r.status, r.body);
-  }
-  if (p === '/api/desk/release' && M === 'POST') {
-    const r = await desk.release(String(q.assignment || ''), w, String(q.reason || ''), q.program ? String(q.program) : null);
-    return json(res, r.status, r.body);
-  }
-
-  if (p === '/api/submit' && M === 'POST') {
-    if (limited(`sb:${w}`, 6, 60_000)) return json(res, 429, { ok: false, error: 'slow down: at most a few submissions a minute' });
-    const a = desk.get(String(q.assignment || ''), w);
-    if (!a) return json(res, 404, { ok: false, error: 'no such assignment' });
-    const gap = db.leases[a.lease]?.gap;
-    if (!gap) return json(res, 410, { ok: false, error: 'this step is no longer known: take a new one' });
-    let file = await readRaw(req, 200 * 1024);
-    if (/^\s*\{/.test(file)) { try { file = JSON.parse(file).file || ''; } catch { /* plain text that starts with { */ } }
-    file = file.replace(/\r\n?/g, '\n').replace(/\n*$/, '\n');
-    const chk = checkLean(file, gap);
-    if (!chk.ok) return json(res, 422, { ok: false, errors: chk.errors, warnings: chk.warnings });
-    if (!safePath(gap.file)) return json(res, 500, { ok: false, error: 'the step has an unexpected file path' });
-    if (!github.configured()) return json(res, 503, { ok: false, error: 'the server cannot open pull requests yet (GITHUB_TOKEN / PNP_HANDLE)' });
-
-    const existing = Object.values(db.submissions).find((s) => s.aid === a.id && s.pr);
-    if (existing) {
-      if (existing.final || existing.accepted) return json(res, 409, { ok: false, error: 'this pull request is closed or already accepted: take a new step' });
-      await github.updateFile({ branch: existing.pr.branch, path: gap.file, content: file, title: String(gap.id) });
-      Object.assign(existing, { sha256: sha256(file), updated_at: nowIso(), verdict: null, resubmits: (existing.resubmits || 0) + 1 });
-      store.save();
-      return json(res, 200, { ok: true, submission: existing.id, pr: existing.pr.url, updated: true, warnings: chk.warnings });
-    }
-    if (a.status !== 'active') return json(res, 410, { ok: false, error: 'this step was settled or withdrawn: take a new one' });
-    if (!(await desk.beforeSubmit(a))) return json(res, 410, { ok: false, error: 'another agent proved this step first: take a new one' });
-    let pr;
-    try {
-      pr = await github.openPr({ branch: safeBranch(gap.id), path: gap.file, content: file, title: String(gap.id) });
-    } catch (e) {
-      console.error('[pr]', e.message);
-      return json(res, 502, { ok: false, error: `could not open the pull request (${e.message}); your step is still held: send again in a minute` });
-    }
-    const s = { id: `s_${crypto.randomBytes(8).toString('base64url')}`, wallet: w, aid: a.id, gap_id: gap.id ?? null, path: gap.file, module: gap.module ?? null, sha256: sha256(file), size: file.length, at: nowIso(), pr, verdict: null };
-    db.submissions[s.id] = s;
-    await desk.afterSubmit(a);
-    store.save();
-    stateCache = null;
-    return json(res, 200, { ok: true, submission: s.id, pr: pr.url, warnings: chk.warnings, next: 'Take the next step now. Check the verdict later.' });
-  }
-
-  if ((m = p.match(/^\/api\/submission\/([^/]+)$/)) && M === 'GET') {
-    const s = db.submissions[m[1]];
-    if (!s || s.wallet !== w) return json(res, 404, { ok: false, error: 'no such submission' });
-    return json(res, 200, { ok: true, submission: s.id, assignment: s.aid, gap: s.gap_id, pr: s.pr?.url, verdict: s.verdict || 'pending', verdict_url: s.verdict_url || null, merged: !!s.merged, accepted: !!s.accepted, lemma: s.lemma_id || null });
-  }
-  return json(res, 404, { ok: false, error: 'not found' });
-}
-
 async function admin(req, res, p, M) {
   let m;
   if (p === '/api/admin/overview' && M === 'GET') {
-    const members = Object.keys(db.members).map((w) => {
-      const v = memberView(w);
-      const mem = db.members[w];
-      const unalloc = Object.values(db.credits[w] || {}).filter((c) => !c.revoked && !c.alloc).length;
-      return { ...v, banned: !!mem.banned, note: mem.note || '', keys: mem.keys || 0, unallocated: unalloc, held: (db.payout?.hold || []).includes(w) };
+    const idx = indexes();
+    const members = Object.keys(db.members).map((k) => {
+      const mem = db.members[k];
+      return { ...memberView(k, idx), banned: !!mem.banned, team: isTeam(k), note: mem.note || '', gist: mem.gist || null, wallets: walletsOf(mem).length, held: (db.payout?.hold || []).includes(mem.wallet) };
     });
-    members.sort((a, b) => b.steps - a.steps || String(b.joined_at).localeCompare(String(a.joined_at)));
-    const subs = Object.values(db.submissions).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 60)
-      .map((s) => ({ id: s.id, wallet: s.wallet, gap: s.gap_id, at: s.at, pr: s.pr?.url, verdict: s.verdict || 'pending', accepted: !!s.accepted, resubmits: s.resubmits || 0, error: s.check_error || null }));
+    members.sort((a, b) => b.steps - a.steps || String(a.joined_at).localeCompare(String(b.joined_at)));
+    const credits = Object.values(db.credits).sort(newestFirst).slice(0, 80)
+      .map((c) => ({ id: c.id, title: c.title, at: c.at, github: c.github, login: c.login, wallet: c.wallet, kind: c.kind || null, pr_url: c.pr_url || null, alloc: c.alloc || null, revoked: c.revoked || null }));
+    let beforeJoin = 0;
+    let onRecord = 0;
+    for (const [k, mem] of Object.entries(db.members)) {
+      const e = pnp.state.byHandle.get(k);
+      if (!e) continue;
+      onRecord++;
+      const since = Date.parse(mem.joined_at);
+      for (const l of e.lemmas) if (Date.parse(l.at) < since) beforeJoin++;
+    }
     return json(res, 200, {
       project: config.project,
-      handle: config.github.handle || null,
-      github_ready: github.configured(),
+      team_handles: [...TEAM].map((h) => ({ github: pnp.state.byHandle.get(h)?.github || h, steps: pnp.state.byHandle.get(h)?.steps || 0 })),
+      github: { token: gh.tokenSet, token_state: gh.tokenState(), gist_line: gistLine() },
       members,
-      submissions: subs,
-      unattributed: Object.values(db.unattributed).sort((a, b) => b.at.localeCompare(a.at)),
+      credits,
+      // The latest sign-ups and wallet changes, and at most 20 refused attempts beside them.
+      registrations: [...db.registrations.filter((r) => !isRefusal(r)).slice(-40), ...db.registrations.filter(isRefusal).slice(-20)]
+        .sort((a, b) => String(b.at).localeCompare(String(a.at))),
       epochs: db.epochs.slice(-50).reverse().map(({ rows, ...e }) => ({ ...e, recipients: rows.length })),
       payout: { ...payout.status(), balance_now: await payout.liveBalance() },
-      desk: desk.status(),
       rewards: config.rewards,
-      sync: { ok: pnp.state.lastOk, err: pnp.state.lastErr, files: pnp.state.files },
-      official: { outside: pnp.state.head?.outside || null, ours: ourRecord().steps },
+      sync: {
+        ok: pnp.state.lastOk,
+        err: pnp.state.lastErr,
+        files: pnp.state.files,
+        contributors_at: pnp.state.contributorsAt,
+        contributors_err: pnp.state.contributorsErr,
+        refresh_seconds: config.pnp.contributorsSeconds,
+      },
+      record: { contributors: pnp.state.contributors?.count || 0, skipped: pnp.state.contributors?.skipped || 0, members_on_record: onRecord, before_join: beforeJoin },
     });
   }
 
   if ((m = p.match(/^\/api\/admin\/member\/([^/]+)$/))) {
-    const w = decodeURIComponent(m[1]);
-    const mem = db.members[w];
+    const id = decodeId(m[1]);
+    const key = id && resolveMember(id);
+    const mem = key && db.members[key];
     if (!mem) return json(res, 404, { error: 'no such member' });
     if (M === 'GET') {
       return json(res, 200, {
-        ...memberView(w),
-        ...mem,
-        credits: Object.values(db.credits[w] || {}).sort((a, b) => b.at.localeCompare(a.at)).map((c) => ({ ...c, weight: weightOf(c) })),
-        payments: (db.payments || []).filter((x) => x.wallet === w).reverse().map((x) => ({ ...x, url: payout.explorer(x.sig) })),
-        submissions: Object.values(db.submissions).filter((s) => s.wallet === w).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 50),
+        ...memberView(key),
+        banned: !!mem.banned,
+        note: mem.note || '',
+        gist: mem.gist || null,
+        wallets: (mem.wallets || []).slice().reverse(),
+        credits: Object.values(db.credits).filter((c) => c.login === key).sort(newestFirst).map((c) => ({ ...c, weight: weightOf(c) })),
+        payments: (db.payments || []).filter((x) => walletsOf(mem).includes(x.wallet)).reverse().map((x) => ({ ...x, url: payout.explorer(x.sig) })),
       });
     }
     if (M === 'POST') {
       const b = await readBody(req);
       if (typeof b.banned === 'boolean') mem.banned = b.banned;
       if (typeof b.note === 'string') mem.note = b.note.slice(0, 500);
-      if (typeof b.name === 'string') mem.name = cleanName(b.name);
-      if (b.clear_hold) payout.clearHold(w);
+      if (b.clear_hold) payout.clearHold(mem.wallet);
       store.save();
       stateCache = null;
+      if (b.banned === false) ingest(); // proofs made while banned count again
       return json(res, 200, { ok: true });
     }
-  }
-
-  if (p === '/api/admin/attribute' && M === 'POST') {
-    const b = await readBody(req);
-    const cr = db.unattributed[b.lemma];
-    if (!cr) throw new UserError('no such unattributed lemma');
-    if (!db.members[b.wallet]) throw new UserError('no such member');
-    (db.credits[b.wallet] ||= {})[cr.id] = { ...cr, attributed_by: 'admin' };
-    delete db.unattributed[b.lemma];
-    store.save();
-    stateCache = null;
-    return json(res, 200, { ok: true });
   }
 
   if (p === '/api/admin/payout/run' && M === 'POST') return json(res, 200, await payout.tick({ manual: true }));
@@ -608,23 +746,36 @@ async function admin(req, res, p, M) {
   if ((m = p.match(/^\/api\/admin\/epoch\/(E\d+)\/csv$/)) && M === 'GET') {
     const e = db.epochs.find((x) => x.id === m[1]);
     if (!e) return json(res, 404, { error: 'no such allocation' });
-    const rows = ['wallet,amount_sol,steps,weight,name', ...e.rows.map((r) => `${r.wallet},${r.amount},${r.steps},${r.weight},${r.name || ''}`)];
+    const rows = ['wallet,amount_sol,steps,weight,github', ...e.rows.map((r) => `${r.wallet},${r.amount},${r.steps},${r.weight},${String(r.github || r.name || '').replace(/[^A-Za-z0-9 _.-]/g, '')}`)];
     return send(res, 200, `${rows.join('\n')}\n`, 'text/csv; charset=utf-8', { 'content-disposition': `attachment; filename="${config.project.slug}-${e.id}.csv"` });
   }
 
   if (p === '/api/admin/sync' && M === 'POST') {
-    await tick();
-    await pollVerdicts();
-    return json(res, 200, { ok: !!pnp.state.lastOk, sync: pnp.state.lastOk, err: pnp.state.lastErr });
+    await tick({ force: true });
+    return json(res, 200, { ok: !!pnp.state.lastOk && !pnp.state.lastErr, sync: pnp.state.lastOk, err: pnp.state.lastErr, contributors: pnp.state.contributorsAt, contributors_err: pnp.state.contributorsErr });
   }
   return json(res, 404, { error: 'not found' });
 }
 
 // ---------------------------------------------------------------- boot
-async function tick() {
-  const ok = await pnp.sync();
-  if (ok) await ingest();
-  stateCache = null;
+// One sync at a time; a periodic one is skipped while another is running or queued.
+let chain = Promise.resolve();
+let queued = 0;
+function tick({ force = false } = {}) {
+  if (!force && queued) return chain;
+  queued++;
+  const run = chain.then(async () => {
+    try {
+      await pnp.sync({ force });
+      ingest();
+      await enrich();
+      stateCache = null;
+    } finally {
+      queued--;
+    }
+  });
+  chain = run.catch((e) => console.error('[sync]', e));
+  return chain;
 }
 
 const server = http.createServer((req, res) => {
@@ -640,11 +791,11 @@ server.listen(config.port, () => {
   console.log(`  site       ${URL_}/`);
   console.log(`  agents     ${URL_}/join.txt   ${URL_}/skill.md`);
   console.log(`  dashboard  ${URL_}/admin`);
-  console.log(`  handle     ${config.github.handle || '(not set: PNP_HANDLE)'}   pull requests ${github.configured() ? 'ready' : 'NOT configured (GITHUB_TOKEN)'}`);
-  console.log(`  pay wallet ${payout.address() || '(none: npm run wallet)'}   auto-pay ${config.payout.enabled ? 'ON' : 'OFF'}`);
+  console.log(`  record     ${config.pnp.data} (contributors at most every ${config.pnp.contributorsSeconds}s)`);
+  console.log(`  gist check ${gh.tokenSet ? 'with a read-only GitHub token' : 'WITHOUT A GITHUB TOKEN: GitHub allows about 60 checks an hour, so a few people can block sign-ups. Set GITHUB_TOKEN in production.'}`);
+  console.log(`  team       ${[...TEAM].map((h) => `@${h}`).join(', ') || '(none)'}: never members, never credited`);
+  console.log(`  treasury   ${payout.address() || '(none: npm run wallet)'}   auto-pay ${config.payout.enabled ? 'ON' : 'OFF'}`);
 });
 tick();
 setInterval(tick, config.pnp.syncSeconds * 1000);
-setInterval(() => desk.maintain(), 60 * 1000);
-setInterval(() => pollVerdicts().catch(() => {}), 2 * 60 * 1000);
 payout.schedule();
